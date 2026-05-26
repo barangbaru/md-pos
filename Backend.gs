@@ -1,0 +1,1659 @@
+/*******************************************************
+ * POS Warung Kolak Lestari - BACKEND API
+ * Batch 2
+ *
+ * Backend untuk:
+ * - doGet web app
+ * - login kasir
+ * - validasi passcode tab protected
+ * - ambil menu/config
+ * - update stock
+ * - checkout order
+ * - dashboard penjualan
+ * - update config
+ *******************************************************/
+
+/* =====================================================
+   WEB APP ROUTING
+===================================================== */
+
+function doGet() {
+  const template = HtmlService.createTemplateFromFile('Index');
+
+  return template
+    .evaluate()
+    .setTitle('POS system')
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
+    .addMetaTag('viewport', 'width=device-width, initial-scale=1');
+}
+
+function include(filename) {
+  return HtmlService.createHtmlOutputFromFile(filename).getContent();
+}
+
+/* =====================================================
+   INITIAL DATA
+===================================================== */
+
+function getInitialData() {
+  try {
+    const config = getConfig();
+    const menus = getMenus();
+
+    return {
+      success: true,
+      message: 'Initial data berhasil dimuat.',
+      data: {
+        config: config.data,
+        menus: menus.data
+      }
+    };
+  } catch (error) {
+    return POS_errorResponse_(error);
+  }
+}
+
+/* =====================================================
+   AUTH
+===================================================== */
+
+function validateCashierLogin(payload) {
+  try {
+    const cashierName = POS_toString_(payload && payload.cashierName).trim();
+    const passcode = POS_toString_(payload && payload.passcode).trim();
+
+    if (!cashierName) {
+      throw new Error('Nama kasir wajib diisi.');
+    }
+
+    if (!passcode) {
+      throw new Error('Passcode wajib diisi.');
+    }
+
+    const cashierPasscode = POS_getConfigValue_('CASHIER_PASSCODE', '');
+
+    if (passcode !== cashierPasscode) {
+      throw new Error('Passcode kasir salah.');
+    }
+
+    return {
+      success: true,
+      message: 'Login berhasil.',
+      data: {
+        cashierName: cashierName,
+        loggedInAt: POS_nowString_()
+      }
+    };
+  } catch (error) {
+    return POS_errorResponse_(error);
+  }
+}
+
+function validateProtectedTabPasscode(payload) {
+  try {
+    const area = POS_toString_(payload && payload.area).trim().toLowerCase();
+    const passcode = POS_toString_(payload && payload.passcode).trim();
+
+    if (!area) {
+      throw new Error('Area akses belum dipilih.');
+    }
+
+    if (!passcode) {
+      throw new Error('Passcode wajib diisi.');
+    }
+
+    let configKey = '';
+
+    if (area === 'dashboard') {
+      configKey = 'DASHBOARD_PASSCODE';
+    } else if (area === 'config') {
+      configKey = 'CONFIG_PASSCODE';
+    } else if (area === 'therapist') {
+      configKey = 'THERAPIST_PASSCODE';
+    } else if (area === 'superadmin') {
+      configKey = 'SUPERADMIN_PASSCODE';
+    } else {
+      throw new Error('Area akses tidak valid.');
+    }
+
+    const correctPasscode = POS_getConfigValue_(configKey, '');
+
+    if (passcode !== correctPasscode) {
+      throw new Error('Passcode salah.');
+    }
+
+    return {
+      success: true,
+      message: 'Akses berhasil dibuka.',
+      data: {
+        area: area,
+        unlockedAt: POS_nowString_()
+      }
+    };
+  } catch (error) {
+    return POS_errorResponse_(error);
+  }
+}
+
+/* =====================================================
+   MENU
+===================================================== */
+
+function getMenus() {
+  try {
+    const rows = POS_readObjects_(POS_SHEET.MENU);
+
+    const menus = rows
+      .map(POS_buildMenuObject_)
+      .filter(menu => menu.menuId && menu.active);
+
+    const categories = [...new Set(menus.map(menu => menu.category).filter(Boolean))];
+
+    return {
+      success: true,
+      message: 'Menu berhasil dimuat.',
+      data: {
+        menus: menus,
+        categories: categories
+      }
+    };
+  } catch (error) {
+    return POS_errorResponse_(error);
+  }
+}
+
+function updateMenuStock(payload) {
+  const lock = LockService.getScriptLock();
+
+  try {
+    lock.waitLock(10000);
+
+    const menuId = POS_toString_(payload && payload.menuId).trim();
+    const mode = POS_toString_(payload && payload.mode).trim().toUpperCase();
+    const stockValue = POS_toNumber_(payload && payload.stockValue);
+
+    if (!menuId) {
+      throw new Error('Menu ID wajib diisi.');
+    }
+
+    if (!['SET', 'ADD', 'REDUCE'].includes(mode)) {
+      throw new Error('Mode update stock tidak valid. Gunakan SET, ADD, atau REDUCE.');
+    }
+
+    if (stockValue < 0) {
+      throw new Error('Nilai stock tidak boleh negatif.');
+    }
+
+    const sheet = POS_getSheet_(POS_SHEET.MENU);
+    const rowMap = POS_getMenuRowMap_();
+    const target = rowMap[menuId];
+
+    if (!target) {
+      throw new Error('Menu tidak ditemukan: ' + menuId);
+    }
+
+    const stockCol = target.headerMap.Stock + 1;
+    const statusCol = target.headerMap.Stock_Status + 1;
+    const updatedAtCol = target.headerMap.Updated_At + 1;
+
+    const currentStock = POS_toNumber_(target.row[target.headerMap.Stock]);
+
+    let newStock = currentStock;
+
+    if (mode === 'SET') {
+      newStock = stockValue;
+    }
+
+    if (mode === 'ADD') {
+      newStock = currentStock + stockValue;
+    }
+
+    if (mode === 'REDUCE') {
+      newStock = Math.max(0, currentStock - stockValue);
+    }
+
+    const newStatus = POS_computeStockStatus_(newStock);
+
+    sheet.getRange(target.rowNumber, stockCol).setValue(newStock);
+    sheet.getRange(target.rowNumber, statusCol).setValue(newStatus);
+    sheet.getRange(target.rowNumber, updatedAtCol).setValue(POS_nowString_());
+
+    SpreadsheetApp.flush();
+
+    return {
+      success: true,
+      message: 'Stock berhasil diperbarui.',
+      data: {
+        menuId: menuId,
+        oldStock: currentStock,
+        newStock: newStock,
+        stockStatus: newStatus
+      }
+    };
+  } catch (error) {
+    return POS_errorResponse_(error);
+  } finally {
+    try {
+      lock.releaseLock();
+    } catch (e) {}
+  }
+}
+
+
+function updateMenuCost(payload) {
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(10000);
+    const menuId = POS_toString_(payload && payload.menuId).trim();
+    const costValue = POS_toNumber_(payload && payload.costValue);
+    if (!menuId) throw new Error('Menu ID wajib diisi.');
+    if (costValue < 0) throw new Error('Modal/HPP tidak boleh negatif.');
+    const sheet = POS_getSheet_(POS_SHEET.MENU);
+    const rowMap = POS_getMenuRowMap_();
+    const target = rowMap[menuId];
+    if (!target) throw new Error('Menu tidak ditemukan: ' + menuId);
+    if (target.headerMap.Cost === undefined) throw new Error('Kolom Cost belum ada. Jalankan upgradePOSDatabaseSchema().');
+    sheet.getRange(target.rowNumber, target.headerMap.Cost + 1).setValue(costValue);
+    sheet.getRange(target.rowNumber, target.headerMap.Updated_At + 1).setValue(POS_nowString_());
+    SpreadsheetApp.flush();
+    return { success: true, message: 'Modal/HPP menu berhasil diperbarui.', data: { menuId: menuId, cost: costValue } };
+  } catch (error) { return POS_errorResponse_(error); }
+  finally { try { lock.releaseLock(); } catch (e) {} }
+}
+
+/* =====================================================
+   CONFIG
+===================================================== */
+
+function getConfig() {
+  try {
+    const config = POS_getConfigMap_();
+
+    const safeConfig = {
+      storeName: POS_toString_(config.STORE_NAME || 'Kedai Kopi'),
+      storeAddress: POS_toString_(config.STORE_ADDRESS || ''),
+      storePhone: POS_toString_(config.STORE_PHONE || ''),
+      taxRate: POS_toNumber_(config.TAX_RATE || 0),
+      serviceRate: POS_toNumber_(config.SERVICE_RATE || 0),
+      lowStockLimit: POS_toNumber_(config.LOW_STOCK_LIMIT || 10),
+      currency: POS_toString_(config.CURRENCY || 'IDR'),
+      receiptFooter: POS_toString_(config.RECEIPT_FOOTER || 'Terima kasih.'),
+
+      qrisImageUrl: POS_toString_(config.QRIS_IMAGE_URL || ''),
+      bankName: POS_toString_(config.BANK_NAME || ''),
+      bankAccountNumber: POS_toString_(config.BANK_ACCOUNT_NUMBER || ''),
+      bankAccountName: POS_toString_(config.BANK_ACCOUNT_NAME || ''),
+      transferNote: POS_toString_(config.TRANSFER_NOTE || ''),
+
+      therapistSharePercent: POS_toNumber_(config.THERAPIST_SHARE_PERCENT || 50)
+    };
+
+    return {
+      success: true,
+      message: 'Config berhasil dimuat.',
+      data: safeConfig
+    };
+  } catch (error) {
+    return POS_errorResponse_(error);
+  }
+}
+
+function updateConfig(payload) {
+  try {
+    const configPasscode = POS_toString_(payload && payload.configPasscode).trim();
+
+    if (!configPasscode) {
+      throw new Error('Passcode config wajib diisi.');
+    }
+
+    const correctPasscode = POS_getConfigValue_('CONFIG_PASSCODE', '');
+
+    if (configPasscode !== correctPasscode) {
+      throw new Error('Passcode config salah.');
+    }
+
+    const updates = {};
+
+    if (payload.storeName !== undefined) {
+      updates.STORE_NAME = POS_toString_(payload.storeName);
+    }
+
+    if (payload.storeAddress !== undefined) {
+      updates.STORE_ADDRESS = POS_toString_(payload.storeAddress);
+    }
+
+    if (payload.storePhone !== undefined) {
+      updates.STORE_PHONE = POS_toString_(payload.storePhone);
+    }
+
+    if (payload.taxRate !== undefined) {
+      const taxRate = POS_toNumber_(payload.taxRate);
+
+      if (taxRate < 0 || taxRate > 100) {
+        throw new Error('Tax rate harus di antara 0 sampai 100.');
+      }
+
+      updates.TAX_RATE = taxRate;
+    }
+
+    if (payload.serviceRate !== undefined) {
+      const serviceRate = POS_toNumber_(payload.serviceRate);
+
+      if (serviceRate < 0 || serviceRate > 100) {
+        throw new Error('Service rate harus di antara 0 sampai 100.');
+      }
+
+      updates.SERVICE_RATE = serviceRate;
+    }
+
+    if (payload.lowStockLimit !== undefined) {
+      const lowStockLimit = POS_toNumber_(payload.lowStockLimit);
+
+      if (lowStockLimit < 1) {
+        throw new Error('Low stock limit minimal 1.');
+      }
+
+      updates.LOW_STOCK_LIMIT = lowStockLimit;
+    }
+
+    if (payload.receiptFooter !== undefined) {
+      updates.RECEIPT_FOOTER = POS_toString_(payload.receiptFooter);
+    }
+
+    if (payload.cashierPasscode !== undefined && POS_toString_(payload.cashierPasscode)) {
+      updates.CASHIER_PASSCODE = POS_toString_(payload.cashierPasscode);
+    }
+
+    if (payload.dashboardPasscode !== undefined && POS_toString_(payload.dashboardPasscode)) {
+      updates.DASHBOARD_PASSCODE = POS_toString_(payload.dashboardPasscode);
+    }
+
+    if (payload.newConfigPasscode !== undefined && POS_toString_(payload.newConfigPasscode)) {
+      updates.CONFIG_PASSCODE = POS_toString_(payload.newConfigPasscode);
+    }
+
+    if (payload.therapistPasscode !== undefined && POS_toString_(payload.therapistPasscode)) {
+      updates.THERAPIST_PASSCODE = POS_toString_(payload.therapistPasscode);
+    }
+
+    if (payload.superadminPasscode !== undefined && POS_toString_(payload.superadminPasscode)) {
+      updates.SUPERADMIN_PASSCODE = POS_toString_(payload.superadminPasscode);
+    }
+
+    if (payload.therapistSharePercent !== undefined && payload.therapistSharePercent !== '') {
+      const sharePct = POS_toNumber_(payload.therapistSharePercent);
+      if (sharePct < 0 || sharePct > 100) {
+        throw new Error('Persentase bagi hasil terapis harus 0 - 100.');
+      }
+      updates.THERAPIST_SHARE_PERCENT = sharePct;
+    }
+
+    POS_updateConfigValues_(updates);
+
+    return {
+      success: true,
+      message: 'Config berhasil diperbarui.',
+      data: getConfig().data
+    };
+  } catch (error) {
+    return POS_errorResponse_(error);
+  }
+}
+
+/* =====================================================
+   CHECKOUT
+===================================================== */
+
+function checkoutOrder(payload) {
+  const lock = LockService.getScriptLock();
+
+  try {
+    lock.waitLock(15000);
+
+    const cashierName = POS_toString_(payload && payload.cashierName).trim();
+    const paymentMethod = POS_validatePaymentMethod_(payload && payload.paymentMethod);
+    const paidAmountInput = POS_toNumber_(payload && payload.paidAmount);
+    const cartItems = POS_validateCartItems_(payload && payload.items);
+
+    if (!cashierName) {
+      throw new Error('Nama kasir tidak ditemukan. Silakan login ulang.');
+    }
+
+    const config = POS_getConfigMap_();
+    const taxRate = POS_toNumber_(config.TAX_RATE || 0);
+    const serviceRate = POS_toNumber_(config.SERVICE_RATE || 0);
+
+    const menuSheet = POS_getSheet_(POS_SHEET.MENU);
+    const rowMap = POS_getMenuRowMap_();
+
+    const normalizedItems = [];
+
+    cartItems.forEach(cartItem => {
+      const target = rowMap[cartItem.menuId];
+
+      if (!target) {
+        throw new Error('Menu tidak ditemukan: ' + cartItem.menuId);
+      }
+
+      const menuId = POS_toString_(target.row[target.headerMap.Menu_ID]);
+      const category = POS_toString_(target.row[target.headerMap.Category]);
+      const menuName = POS_toString_(target.row[target.headerMap.Menu_Name]);
+      const price = POS_toNumber_(target.row[target.headerMap.Price]);
+      const cost = target.headerMap.Cost !== undefined ? POS_toNumber_(target.row[target.headerMap.Cost]) : 0;
+      const stock = POS_toNumber_(target.row[target.headerMap.Stock]);
+      const active = POS_toBoolean_(target.row[target.headerMap.Active]);
+
+      if (!active) {
+        throw new Error(menuName + ' sedang tidak aktif.');
+      }
+
+      if (stock <= 0) {
+        throw new Error(menuName + ' sedang habis.');
+      }
+
+      if (cartItem.qty > stock) {
+        throw new Error(menuName + ' stock tidak cukup. Sisa stock: ' + stock);
+      }
+
+      normalizedItems.push({
+        menuId: menuId,
+        category: category,
+        menuName: menuName,
+        qty: cartItem.qty,
+        price: price,
+        cost: cost * cartItem.qty,
+        amount: price * cartItem.qty,
+        grossProfit: (price * cartItem.qty) - (cost * cartItem.qty),
+        currentStock: stock,
+        rowNumber: target.rowNumber,
+        headerMap: target.headerMap
+      });
+    });
+
+    const totals = POS_calculateTotals_(normalizedItems, taxRate, serviceRate);
+
+    let paidAmount = paidAmountInput;
+    let changeAmount = 0;
+
+    if (paymentMethod === POS_PAYMENT.CASH) {
+      if (paidAmount < totals.roundedTotal) {
+        throw new Error('Uang bayar kurang dari total pembayaran.');
+      }
+
+      changeAmount = paidAmount - totals.roundedTotal;
+    } else {
+      paidAmount = totals.roundedTotal;
+      changeAmount = 0;
+    }
+
+    const transactionId = POS_generateTransactionId_();
+    const today = POS_todayString_();
+    const time = POS_timeString_();
+    const now = POS_nowString_();
+
+    const salesRow = {
+      Transaction_ID: transactionId,
+      Date: today,
+      Time: time,
+      Cashier_Name: cashierName,
+      Subtotal: totals.subtotal,
+      Tax_Rate: totals.taxRate,
+      Tax_Amount: totals.taxAmount,
+      Service_Rate: totals.serviceRate,
+      Service_Amount: totals.serviceAmount,
+      Grand_Total: totals.grandTotal,
+      Payment_Method: paymentMethod,
+      Paid_Amount: paidAmount,
+      Change_Amount: changeAmount,
+      Rounded_Total: totals.roundedTotal,
+      Status: 'PAID',
+      Created_At: now
+    };
+
+    const saleItemRows = normalizedItems.map(item => {
+      return {
+        Transaction_ID: transactionId,
+        Menu_ID: item.menuId,
+        Menu_Name: item.menuName,
+        Category: item.category,
+        Qty: item.qty,
+        Price: item.price,
+        Cost: item.cost,
+        Amount: item.amount,
+        Gross_Profit: item.grossProfit,
+        Created_At: now
+      };
+    });
+
+    POS_appendObjects_(POS_SHEET.SALES, [salesRow]);
+    POS_appendObjects_(POS_SHEET.SALE_ITEMS, saleItemRows);
+
+    normalizedItems.forEach(item => {
+      const stockCol = item.headerMap.Stock + 1;
+      const statusCol = item.headerMap.Stock_Status + 1;
+      const updatedAtCol = item.headerMap.Updated_At + 1;
+
+      const newStock = item.currentStock - item.qty;
+      const newStatus = POS_computeStockStatus_(newStock);
+
+      menuSheet.getRange(item.rowNumber, stockCol).setValue(newStock);
+      menuSheet.getRange(item.rowNumber, statusCol).setValue(newStatus);
+      menuSheet.getRange(item.rowNumber, updatedAtCol).setValue(now);
+    });
+
+    SpreadsheetApp.flush();
+
+    const receiptData = {
+      store: {
+        name: POS_toString_(config.STORE_NAME || 'Kedai Kopi'),
+        address: POS_toString_(config.STORE_ADDRESS || ''),
+        phone: POS_toString_(config.STORE_PHONE || ''),
+        footer: POS_toString_(config.RECEIPT_FOOTER || 'Terima kasih.')
+      },
+      transaction: {
+        transactionId: transactionId,
+        date: today,
+        time: time,
+        cashierName: cashierName,
+        paymentMethod: paymentMethod
+      },
+      items: normalizedItems.map(item => {
+        return {
+          menuId: item.menuId,
+          category: item.category,
+          menuName: item.menuName,
+          qty: item.qty,
+          price: item.price,
+          amount: item.amount
+        };
+      }),
+      totals: {
+        subtotal: totals.subtotal,
+        taxRate: totals.taxRate,
+        taxAmount: totals.taxAmount,
+        serviceRate: totals.serviceRate,
+        serviceAmount: totals.serviceAmount,
+        grandTotal: totals.grandTotal,
+        roundedTotal: totals.roundedTotal,
+        paidAmount: paidAmount,
+        changeAmount: changeAmount
+      }
+    };
+
+    return {
+      success: true,
+      message: 'Checkout berhasil.',
+      data: {
+        transactionId: transactionId,
+        receipt: receiptData,
+        menus: getMenus().data
+      }
+    };
+  } catch (error) {
+    return POS_errorResponse_(error);
+  } finally {
+    try {
+      lock.releaseLock();
+    } catch (e) {}
+  }
+}
+
+
+/* =====================================================
+   EXPENSES / PENGELUARAN
+===================================================== */
+
+function POS_isPersonalExpenseCategory_(category) {
+  const text = POS_toString_(category).toLowerCase().trim();
+  return text.indexOf('kasbon') !== -1 || text.indexOf('fee') !== -1;
+}
+
+function POS_normalizeExpenseRow_(row) {
+  const savedType = POS_toString_(row && row.Expense_Type).trim();
+  const category = POS_toString_(row && row.Category);
+  let type;
+  if (savedType === 'Therapist') {
+    // Hormati flag terapis yang sudah tersimpan
+    type = 'Therapist';
+  } else {
+    type = POS_isPersonalExpenseCategory_(category) ? 'Personal' : 'Sharing';
+  }
+  const copy = Object.assign({}, row);
+  copy.Expense_Type = type;
+  if (type === 'Personal' && !POS_toString_(copy.Personal_Cashier)) copy.Personal_Cashier = POS_toString_(copy.Cashier_Name);
+  if (type === 'Sharing') copy.Personal_Cashier = '';
+  // Therapist: keep Personal_Cashier as-is (nama terapis)
+  return copy;
+}
+
+function addExpense(payload) {
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(10000);
+    const cashierName = POS_toString_(payload && payload.cashierName).trim();
+    const category = POS_toString_(payload && payload.category).trim();
+    const description = POS_toString_(payload && payload.description).trim();
+    const amount = POS_toNumber_(payload && payload.amount);
+
+    // Explicit target dari frontend: 'therapist' = kasbon terapis (terhubung ke master THERAPISTS)
+    const explicitTarget = POS_toString_(payload && payload.targetType).trim().toLowerCase();
+
+    let expenseType;
+    let personalCashier;
+
+    if (explicitTarget === 'therapist') {
+      expenseType = 'Therapist';
+      // Untuk kasbon terapis, Personal_Cashier = nama terapis (bukan kasir)
+      personalCashier = POS_toString_(payload && payload.therapistName || payload && payload.personalCashier).trim();
+      if (!personalCashier) throw new Error('Nama terapis penerima kasbon wajib diisi.');
+    } else if (POS_isPersonalExpenseCategory_(category)) {
+      expenseType = 'Personal';
+      personalCashier = POS_toString_(payload && payload.personalCashier || cashierName).trim();
+      if (!personalCashier) throw new Error('Nama kasir penerima kasbon/fee wajib diisi.');
+    } else {
+      expenseType = 'Sharing';
+      personalCashier = '';
+    }
+
+    if (!cashierName) throw new Error('Nama kasir tidak ditemukan. Silakan login ulang.');
+    if (!category) throw new Error('Kategori pengeluaran wajib diisi.');
+    if (!description) throw new Error('Keterangan pengeluaran wajib diisi.');
+    if (amount <= 0) throw new Error('Nilai pengeluaran harus lebih dari 0.');
+
+    const row = {
+      Expense_ID: POS_generateExpenseId_(), Date: POS_todayString_(), Time: POS_timeString_(), Cashier_Name: cashierName,
+      Expense_Type: expenseType, Personal_Cashier: personalCashier, Category: category, Description: description, Amount: amount,
+      Created_At: POS_nowString_()
+    };
+    POS_appendObjects_(POS_SHEET.EXPENSES, [row]);
+    SpreadsheetApp.flush();
+    return { success: true, message: 'Pengeluaran berhasil disimpan.', data: row };
+  } catch (error) { return POS_errorResponse_(error); }
+  finally { try { lock.releaseLock(); } catch (e) {} }
+}
+
+function getExpenses() {
+  try {
+    const expenses = POS_readObjects_(POS_SHEET.EXPENSES)
+      .filter(row => POS_toString_(row.Expense_ID))
+      .map(POS_normalizeExpenseRow_)
+      .sort((a, b) => (POS_toString_(b.Date) + ' ' + POS_toString_(b.Time)).localeCompare(POS_toString_(a.Date) + ' ' + POS_toString_(a.Time)));
+    return { success: true, message: 'Data pengeluaran berhasil dimuat.', data: { expenses: expenses } };
+  } catch (error) { return POS_errorResponse_(error); }
+}
+
+/* =====================================================
+   DASHBOARD
+===================================================== */
+
+/**
+ * Mengambil data dashboard dengan dukungan filter range tanggal.
+ *
+ * @param {Object} [filter] Opsional. { startDate: 'yyyy-MM-dd', endDate: 'yyyy-MM-dd' }
+ *   - Jika tidak dikirim atau invalid, default range = hari ini (single day).
+ *   - Range dibatasi maksimal 366 hari untuk menjaga performa.
+ *
+ * Semua kartu utama, ringkasan pembayaran, top kasir, breakdown pengeluaran,
+ * dan tabel rekap penjualan mengikuti range yang dipilih. Chart "Last 7 Days"
+ * tetap menampilkan 7 hari terakhir relatif terhadap endDate range.
+ */
+function getDashboardData(filter) {
+  try {
+    const sales = POS_readObjects_(POS_SHEET.SALES);
+    const saleItems = POS_readObjects_(POS_SHEET.SALE_ITEMS);
+    const expenses = POS_readObjects_(POS_SHEET.EXPENSES).map(POS_normalizeExpenseRow_);
+    const menuCostMap = POS_getMenuCostMap_();
+    const today = POS_todayString_();
+
+    // ----- Resolve & validate date range -----
+    const range = POS_resolveDashboardRange_(filter, today);
+    const rangeDates = POS_getDateStringsBetween_(range.startDate, range.endDate);
+
+    const paidSales = sales.filter(row => POS_toString_(row.Status) === 'PAID');
+
+    // Sales / items / expenses dalam range
+    const rangeSales = paidSales.filter(row => POS_isDateInRange_(row.Date, range.startDate, range.endDate));
+    const rangeExpenses = expenses.filter(row => POS_isDateInRange_(row.Date, range.startDate, range.endDate));
+    const rangeTransactionIds = rangeSales.map(row => POS_toString_(row.Transaction_ID));
+    const rangeItems = saleItems.filter(item => rangeTransactionIds.includes(POS_toString_(item.Transaction_ID)));
+
+    // Agregat utama (kartu "hari ini" di UI sekarang berisi total range)
+    const rangeRevenue = POS_sumSalesAmount_(rangeSales);
+    const rangeSubtotal = rangeSales.reduce((sum, row) => sum + POS_toNumber_(row.Subtotal), 0);
+    const rangeCost = POS_sumItemCost_(rangeItems, menuCostMap);
+    const rangeGrossProfit = POS_sumItemGrossProfit_(rangeItems, menuCostMap);
+    const rangeExpenseTotal = POS_sumExpenses_(rangeExpenses);
+    const rangeSharingExpenseTotal = POS_sumExpensesByType_(rangeExpenses, 'Sharing');
+    const rangePersonalExpenseTotal = POS_sumExpensesByType_(rangeExpenses, 'Personal');
+    const rangeNetProfit = rangeGrossProfit - rangeExpenseTotal;
+    const rangeTransactions = rangeSales.length;
+    const topCashierRange = POS_calculateTopCashiers_(rangeSales, 1)[0] || { cashierName: '-', transactions: 0, revenue: 0 };
+
+    // Breakdown harian dalam range
+    const rangeDailyBreakdown = rangeDates.map(date => {
+      const dailySales = paidSales.filter(row => POS_isSameDateString_(row.Date, date));
+      const dailyTransactionIds = dailySales.map(row => POS_toString_(row.Transaction_ID));
+      const dailyItems = saleItems.filter(item => dailyTransactionIds.includes(POS_toString_(item.Transaction_ID)));
+      const dailyExpenses = expenses.filter(row => POS_isSameDateString_(row.Date, date));
+      const revenue = POS_sumSalesAmount_(dailySales);
+      const grossProfit = POS_sumItemGrossProfit_(dailyItems, menuCostMap);
+      const expenseTotal = POS_sumExpenses_(dailyExpenses);
+
+      return {
+        date: date,
+        label: date.slice(8),
+        revenue: revenue,
+        grossProfit: grossProfit,
+        expenses: expenseTotal,
+        netProfit: grossProfit - expenseTotal,
+        transactions: dailySales.length
+      };
+    });
+
+    const rangeSummary = {
+      revenue: rangeRevenue,
+      grossProfit: rangeGrossProfit,
+      expenses: rangeExpenseTotal,
+      netProfit: rangeNetProfit,
+      transactions: rangeTransactions
+    };
+
+    // Chart 7 hari terakhir relatif terhadap endDate range
+    const last7Dates = POS_getLast7DateStringsFrom_(range.endDate);
+    const last7Revenue = last7Dates.map(date => {
+      const dailySales = paidSales.filter(row => POS_isSameDateString_(row.Date, date));
+      const dailyTransactionIds = dailySales.map(row => POS_toString_(row.Transaction_ID));
+      const dailyItems = saleItems.filter(item => dailyTransactionIds.includes(POS_toString_(item.Transaction_ID)));
+      const dailyExpenses = expenses.filter(row => POS_isSameDateString_(row.Date, date));
+      const revenue = POS_sumSalesAmount_(dailySales);
+      const grossProfit = POS_sumItemGrossProfit_(dailyItems, menuCostMap);
+      const expenseTotal = POS_sumExpenses_(dailyExpenses);
+      return { date: date, label: date.slice(5), revenue: revenue, grossProfit: grossProfit, expenses: expenseTotal, netProfit: grossProfit - expenseTotal, transactions: dailySales.length };
+    });
+
+    const paymentSummary = POS_calculatePaymentSummary_(rangeSales);
+    const topCashiers = POS_calculateTopCashiers_(rangeSales, 5);
+    const sharingExpenses = POS_groupExpensesByCategory_(rangeExpenses.filter(row => POS_toString_(row.Expense_Type) !== 'Personal'));
+    const personalExpenses = POS_groupPersonalExpenses_(rangeExpenses.filter(row => POS_toString_(row.Expense_Type) === 'Personal'));
+
+    return {
+      success: true,
+      message: 'Dashboard berhasil dimuat.',
+      data: {
+        today: today,
+        range: { startDate: range.startDate, endDate: range.endDate, days: rangeDates.length },
+        cards: {
+          // Catatan: nama field "today" dipertahankan agar kompatibel dengan UI lama.
+          // Isinya sekarang adalah total range yang dipilih.
+          revenueToday: rangeRevenue,
+          subtotalToday: rangeSubtotal,
+          costToday: rangeCost,
+          grossProfitToday: rangeGrossProfit,
+          expensesToday: rangeExpenseTotal,
+          sharingExpensesToday: rangeSharingExpenseTotal,
+          personalExpensesToday: rangePersonalExpenseTotal,
+          netProfitToday: rangeNetProfit,
+          transactionsToday: rangeTransactions,
+          topCashierToday: topCashierRange,
+          // Field "monthly..." sekarang berisi total range (sama dengan range...).
+          // Dipertahankan supaya tidak break UI lama bila ada referensi.
+          monthlyRevenue: rangeSummary.revenue,
+          monthlyGrossProfit: rangeSummary.grossProfit,
+          monthlyExpenses: rangeSummary.expenses,
+          monthlyNetProfit: rangeSummary.netProfit,
+          monthlyTransactions: rangeSummary.transactions
+        },
+        last7Revenue: last7Revenue,
+        paymentSummary: paymentSummary,
+        topCashiers: topCashiers,
+        // monthlySales / monthlySummary sekarang berisi breakdown harian dari range
+        monthlySales: rangeDailyBreakdown,
+        monthlySummary: rangeSummary,
+        sharingExpenses: sharingExpenses,
+        personalExpenses: personalExpenses
+      }
+    };
+  } catch (error) { return POS_errorResponse_(error); }
+}
+
+/**
+ * Validasi & normalisasi range tanggal dari frontend.
+ * Default = single day (today). Swap otomatis jika start > end.
+ * Maksimal range 366 hari untuk menjaga performa.
+ */
+function POS_resolveDashboardRange_(filter, todayStr) {
+  const fallback = { startDate: todayStr, endDate: todayStr };
+  if (!filter || typeof filter !== 'object') return fallback;
+
+  let start = POS_toString_(filter.startDate).trim();
+  let end = POS_toString_(filter.endDate).trim();
+  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+
+  if (!dateRegex.test(start) && !dateRegex.test(end)) return fallback;
+  if (!dateRegex.test(start)) start = end;
+  if (!dateRegex.test(end)) end = start;
+
+  // swap jika terbalik
+  if (start > end) { const tmp = start; start = end; end = tmp; }
+
+  // batasi maksimal 366 hari
+  const startD = POS_parseDateString_(start);
+  const endD = POS_parseDateString_(end);
+  if (!startD || !endD) return fallback;
+  const diffDays = Math.round((endD.getTime() - startD.getTime()) / (24 * 60 * 60 * 1000));
+  if (diffDays > 365) {
+    const cappedStart = POS_addDays_(endD, -365);
+    return { startDate: POS_formatDate_(cappedStart), endDate: end };
+  }
+
+  return { startDate: start, endDate: end };
+}
+
+/** Parse 'yyyy-MM-dd' menjadi Date (lokal). Return null jika invalid. */
+function POS_parseDateString_(str) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(str || '');
+  if (!m) return null;
+  const y = Number(m[1]), mo = Number(m[2]) - 1, d = Number(m[3]);
+  const dt = new Date(y, mo, d);
+  if (dt.getFullYear() !== y || dt.getMonth() !== mo || dt.getDate() !== d) return null;
+  return dt;
+}
+
+/** Generate semua tanggal (string yyyy-MM-dd) inklusif antara start..end. */
+function POS_getDateStringsBetween_(startStr, endStr) {
+  const startD = POS_parseDateString_(startStr);
+  const endD = POS_parseDateString_(endStr);
+  if (!startD || !endD) return [];
+  const dates = [];
+  let cursor = startD;
+  while (cursor.getTime() <= endD.getTime()) {
+    dates.push(POS_formatDate_(cursor));
+    cursor = POS_addDays_(cursor, 1);
+  }
+  return dates;
+}
+
+/** Cek apakah value tanggal berada di range [startStr, endStr] inklusif. */
+function POS_isDateInRange_(value, startStr, endStr) {
+  if (!value) return false;
+  let dateStr;
+  if (value instanceof Date) {
+    dateStr = POS_formatDate_(value);
+  } else {
+    dateStr = POS_toString_(value).trim().slice(0, 10);
+  }
+  return dateStr >= startStr && dateStr <= endStr;
+}
+
+/** 7 hari terakhir berakhir di endDateStr (inklusif). */
+function POS_getLast7DateStringsFrom_(endDateStr) {
+  const endD = POS_parseDateString_(endDateStr) || POS_now_();
+  const dates = [];
+  for (let i = 6; i >= 0; i--) {
+    dates.push(POS_formatDate_(POS_addDays_(endD, -i)));
+  }
+  return dates;
+}
+
+
+function POS_getCurrentMonthDateStrings_() {
+  const today = POS_now_();
+  const year = today.getFullYear();
+  const month = today.getMonth();
+  const lastDay = new Date(year, month + 1, 0).getDate();
+  const dates = [];
+
+  for (let day = 1; day <= lastDay; day++) {
+    dates.push(POS_formatDate_(new Date(year, month, day)));
+  }
+
+  return dates;
+}
+
+function POS_calculateTopProduct_(items) {
+  const topProducts = POS_calculateTopProducts_(items, 1);
+
+  if (topProducts.length === 0) {
+    return {
+      menuName: '-',
+      qty: 0,
+      amount: 0
+    };
+  }
+
+  return topProducts[0];
+}
+
+function POS_calculateTopProducts_(items, limit) {
+  const map = {};
+
+  items.forEach(item => {
+    const menuName = POS_toString_(item.Menu_Name);
+    const qty = POS_toNumber_(item.Qty);
+    const amount = POS_toNumber_(item.Amount);
+
+    if (!menuName) {
+      return;
+    }
+
+    if (!map[menuName]) {
+      map[menuName] = {
+        menuName: menuName,
+        qty: 0,
+        amount: 0
+      };
+    }
+
+    map[menuName].qty += qty;
+    map[menuName].amount += amount;
+  });
+
+  return Object.values(map)
+    .sort((a, b) => {
+      if (b.qty !== a.qty) {
+        return b.qty - a.qty;
+      }
+
+      return b.amount - a.amount;
+    })
+    .slice(0, limit || 5);
+}
+
+function POS_calculatePaymentSummary_(sales) {
+  const summary = {
+    Cash: 0,
+    QRIS: 0,
+    Transfer: 0
+  };
+
+  sales.forEach(row => {
+    const method = POS_toString_(row.Payment_Method);
+    const amount = POS_toNumber_(row.Rounded_Total || row.Grand_Total);
+
+    if (summary[method] === undefined) {
+      summary[method] = 0;
+    }
+
+    summary[method] += amount;
+  });
+
+  return summary;
+}
+
+
+function POS_sumSalesAmount_(sales) { return sales.reduce((sum, row) => sum + POS_toNumber_(row.Rounded_Total || row.Grand_Total), 0); }
+function POS_getMenuCostMap_() { const map={}; POS_readObjects_(POS_SHEET.MENU).forEach(row => { const id=POS_toString_(row.Menu_ID); if(id) map[id]=POS_toNumber_(row.Cost || row.HPP || row.Modal); }); return map; }
+function POS_getItemCost_(item, menuCostMap) { const existing=POS_toNumber_(item.Cost); if (existing > 0 || POS_toString_(item.Cost) !== '') return existing; return POS_toNumber_((menuCostMap || {})[POS_toString_(item.Menu_ID)]) * POS_toNumber_(item.Qty); }
+function POS_sumItemCost_(items, menuCostMap) { return items.reduce((sum, item) => sum + POS_getItemCost_(item, menuCostMap), 0); }
+function POS_sumItemGrossProfit_(items, menuCostMap) { return items.reduce((sum, item) => { const existing=POS_toNumber_(item.Gross_Profit); if (existing !== 0 || POS_toString_(item.Gross_Profit) !== '') return sum + existing; return sum + POS_toNumber_(item.Amount) - POS_getItemCost_(item, menuCostMap); }, 0); }
+function POS_sumExpenses_(expenses) { return expenses.reduce((sum, row) => sum + POS_toNumber_(row.Amount), 0); }
+function POS_sumExpensesByType_(expenses, type) { return expenses.map(POS_normalizeExpenseRow_).filter(row => POS_toString_(row.Expense_Type || 'Sharing') === type).reduce((sum, row) => sum + POS_toNumber_(row.Amount), 0); }
+function POS_calculateTopCashiers_(sales, limit) { const map={}; sales.forEach(row => { const cashierName=POS_toString_(row.Cashier_Name) || '-'; const amount=POS_toNumber_(row.Rounded_Total || row.Grand_Total); if(!map[cashierName]) map[cashierName]={cashierName:cashierName,transactions:0,revenue:0}; map[cashierName].transactions += 1; map[cashierName].revenue += amount; }); return Object.values(map).sort((a,b)=> b.revenue !== a.revenue ? b.revenue-a.revenue : b.transactions-a.transactions).slice(0, limit || 5); }
+function POS_groupExpensesByCategory_(expenses) { const map={}; expenses.forEach(row => { const category=POS_toString_(row.Category) || 'Lainnya'; if(!map[category]) map[category]={category:category,amount:0,count:0}; map[category].amount += POS_toNumber_(row.Amount); map[category].count += 1; }); return Object.values(map).sort((a,b)=>b.amount-a.amount); }
+function POS_groupPersonalExpenses_(expenses) { const map={}; expenses.forEach(row => { const cashier=POS_toString_(row.Personal_Cashier) || POS_toString_(row.Cashier_Name) || '-'; const category=POS_toString_(row.Category) || 'Kasbon/Fee'; const key=cashier+'|'+category; if(!map[key]) map[key]={cashierName:cashier,category:category,amount:0,count:0}; map[key].amount += POS_toNumber_(row.Amount); map[key].count += 1; }); return Object.values(map).sort((a,b)=>b.amount-a.amount); }
+
+/* =====================================================
+   RECEIPT TEXT GENERATOR
+   Ini belum dipakai di frontend Batch 3,
+   tapi sudah disiapkan untuk Batch 5 / RAWBT.
+===================================================== */
+
+function generatePaymentReceiptText(receipt) {
+  try {
+    const lines = [];
+
+    const store = receipt.store || {};
+    const trx = receipt.transaction || {};
+    const items = receipt.items || [];
+    const totals = receipt.totals || {};
+
+    lines.push(POS_centerText_(POS_toString_(store.name), 32));
+
+    if (store.address) {
+      lines.push(POS_centerText_(POS_toString_(store.address), 32));
+    }
+
+    if (store.phone) {
+      lines.push(POS_centerText_(POS_toString_(store.phone), 32));
+    }
+
+    lines.push('--------------------------------');
+    lines.push('No: ' + POS_toString_(trx.transactionId));
+    lines.push('Tgl: ' + POS_toString_(trx.date) + ' ' + POS_toString_(trx.time));
+    lines.push('Kasir: ' + POS_toString_(trx.cashierName));
+    lines.push('--------------------------------');
+
+    items.forEach(item => {
+      lines.push(POS_toString_(item.menuName));
+      const left = POS_toString_(item.qty) + ' x ' + POS_formatRupiah_(item.price);
+      const right = POS_formatRupiah_(item.amount);
+      lines.push(POS_leftRightText_(left, right, 32));
+    });
+
+    lines.push('--------------------------------');
+    lines.push(POS_leftRightText_('Subtotal', POS_formatRupiah_(totals.subtotal), 32));
+    lines.push(POS_leftRightText_('Tax ' + totals.taxRate + '%', POS_formatRupiah_(totals.taxAmount), 32));
+    lines.push(POS_leftRightText_('Service ' + totals.serviceRate + '%', POS_formatRupiah_(totals.serviceAmount), 32));
+    lines.push(POS_leftRightText_('Total', POS_formatRupiah_(totals.roundedTotal), 32));
+    lines.push(POS_leftRightText_('Bayar', POS_formatRupiah_(totals.paidAmount), 32));
+    lines.push(POS_leftRightText_('Kembali', POS_formatRupiah_(totals.changeAmount), 32));
+    lines.push('--------------------------------');
+
+    if (store.footer) {
+      lines.push(POS_centerText_(POS_toString_(store.footer), 32));
+    }
+
+    return {
+      success: true,
+      message: 'Receipt text berhasil dibuat.',
+      data: lines.join('\n')
+    };
+  } catch (error) {
+    return POS_errorResponse_(error);
+  }
+}
+
+function generateKitchenReceiptText(receipt) {
+  try {
+    const lines = [];
+
+    const trx = receipt.transaction || {};
+    const items = receipt.items || [];
+
+    lines.push(POS_centerText_('KITCHEN ORDER', 32));
+    lines.push('--------------------------------');
+    lines.push('No: ' + POS_toString_(trx.transactionId));
+    lines.push('Jam: ' + POS_toString_(trx.time));
+    lines.push('Kasir: ' + POS_toString_(trx.cashierName));
+    lines.push('--------------------------------');
+
+    items.forEach(item => {
+      lines.push(POS_toString_(item.qty) + 'x ' + POS_toString_(item.menuName));
+    });
+
+    lines.push('--------------------------------');
+
+    return {
+      success: true,
+      message: 'Kitchen receipt text berhasil dibuat.',
+      data: lines.join('\n')
+    };
+  } catch (error) {
+    return POS_errorResponse_(error);
+  }
+}
+
+function POS_centerText_(text, width) {
+  const cleanText = POS_toString_(text);
+
+  if (cleanText.length >= width) {
+    return cleanText.slice(0, width);
+  }
+
+  const leftPadding = Math.floor((width - cleanText.length) / 2);
+  return ' '.repeat(leftPadding) + cleanText;
+}
+
+function POS_leftRightText_(left, right, width) {
+  const cleanLeft = POS_toString_(left);
+  const cleanRight = POS_toString_(right);
+
+  const space = width - cleanLeft.length - cleanRight.length;
+
+  if (space <= 1) {
+    return cleanLeft + ' ' + cleanRight;
+  }
+
+  return cleanLeft + ' '.repeat(space) + cleanRight;
+}
+
+/* =====================================================
+   ERROR RESPONSE
+===================================================== */
+
+function POS_errorResponse_(error) {
+  const message = error && error.message ? error.message : String(error);
+
+  Logger.log('❌ POS Error: ' + message);
+
+  return {
+    success: false,
+    message: message,
+    data: null
+  };
+}
+
+function testLogin() {
+  const result = validateCashierLogin({
+    cashierName: 'Farkhan',
+    passcode: '123456'
+  });
+
+  Logger.log(JSON.stringify(result, null, 2));
+}
+
+function testCheckout() {
+  const result = checkoutOrder({
+    cashierName: 'Farkhan',
+    paymentMethod: 'Cash',
+    paidAmount: 100000,
+    items: [
+      {
+        menuId: 'M001',
+        qty: 2
+      },
+      {
+        menuId: 'M009',
+        qty: 1
+      }
+    ]
+  });
+
+  Logger.log(JSON.stringify(result, null, 2));
+}
+
+/* =====================================================
+   THERAPIST MASTER (CRUD)
+===================================================== */
+
+/** Daftarkan terapis baru atau update yang ada. */
+function saveTherapist(payload) {
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(10000);
+    const therapistId = POS_toString_(payload && payload.therapistId).trim();
+    const name = POS_toString_(payload && payload.therapistName).trim();
+    const phone = POS_toString_(payload && payload.phone).trim();
+    const pointValue = POS_toNumber_(payload && payload.defaultPointValue);
+    const active = (payload && payload.active !== undefined) ? POS_toBoolean_(payload.active) : true;
+    const notes = POS_toString_(payload && payload.notes).trim();
+
+    if (!name) throw new Error('Nama terapis wajib diisi.');
+    if (pointValue < 0) throw new Error('Nilai point tidak boleh negatif.');
+
+    const sheet = POS_getSheet_(POS_SHEET.THERAPISTS);
+    const headers = POS_getHeaders_(sheet);
+    const headerMap = POS_getHeaderMap_(headers);
+    const lastRow = sheet.getLastRow();
+    const now = POS_nowString_();
+
+    // === UPDATE ===
+    if (therapistId) {
+      // cari row
+      let foundRow = -1;
+      if (lastRow >= 2) {
+        const values = sheet.getRange(2, 1, lastRow - 1, headers.length).getValues();
+        for (let i = 0; i < values.length; i++) {
+          if (POS_toString_(values[i][headerMap.Therapist_ID]) === therapistId) {
+            foundRow = i + 2;
+            break;
+          }
+        }
+      }
+      if (foundRow === -1) throw new Error('Terapis tidak ditemukan: ' + therapistId);
+
+      sheet.getRange(foundRow, headerMap.Therapist_Name + 1).setValue(name);
+      sheet.getRange(foundRow, headerMap.Phone + 1).setValue(phone);
+      sheet.getRange(foundRow, headerMap.Default_Point_Value + 1).setValue(pointValue);
+      sheet.getRange(foundRow, headerMap.Active + 1).setValue(active ? 'TRUE' : 'FALSE');
+      sheet.getRange(foundRow, headerMap.Notes + 1).setValue(notes);
+      sheet.getRange(foundRow, headerMap.Updated_At + 1).setValue(now);
+
+      SpreadsheetApp.flush();
+      return { success: true, message: 'Terapis berhasil diupdate.', data: { therapistId: therapistId } };
+    }
+
+    // === INSERT ===
+    const newId = POS_generateTherapistId_();
+    const row = {
+      Therapist_ID: newId,
+      Therapist_Name: name,
+      Phone: phone,
+      Default_Point_Value: pointValue,
+      Active: active ? 'TRUE' : 'FALSE',
+      Notes: notes,
+      Created_At: now,
+      Updated_At: now
+    };
+    POS_appendObjects_(POS_SHEET.THERAPISTS, [row]);
+    SpreadsheetApp.flush();
+    return { success: true, message: 'Terapis berhasil ditambahkan.', data: row };
+  } catch (error) {
+    return POS_errorResponse_(error);
+  } finally { try { lock.releaseLock(); } catch (e) {} }
+}
+
+/** Soft-delete: set Active = FALSE. Aman karena data point lama tetap valid. */
+function deactivateTherapist(payload) {
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(10000);
+    const therapistId = POS_toString_(payload && payload.therapistId).trim();
+    if (!therapistId) throw new Error('Therapist ID wajib diisi.');
+    const sheet = POS_getSheet_(POS_SHEET.THERAPISTS);
+    const headers = POS_getHeaders_(sheet);
+    const headerMap = POS_getHeaderMap_(headers);
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) throw new Error('Belum ada data terapis.');
+    const values = sheet.getRange(2, 1, lastRow - 1, headers.length).getValues();
+    for (let i = 0; i < values.length; i++) {
+      if (POS_toString_(values[i][headerMap.Therapist_ID]) === therapistId) {
+        sheet.getRange(i + 2, headerMap.Active + 1).setValue('FALSE');
+        sheet.getRange(i + 2, headerMap.Updated_At + 1).setValue(POS_nowString_());
+        SpreadsheetApp.flush();
+        return { success: true, message: 'Terapis dinonaktifkan.' };
+      }
+    }
+    throw new Error('Terapis tidak ditemukan.');
+  } catch (error) {
+    return POS_errorResponse_(error);
+  } finally { try { lock.releaseLock(); } catch (e) {} }
+}
+
+/** Aktifkan kembali terapis. */
+function reactivateTherapist(payload) {
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(10000);
+    const therapistId = POS_toString_(payload && payload.therapistId).trim();
+    if (!therapistId) throw new Error('Therapist ID wajib diisi.');
+    const sheet = POS_getSheet_(POS_SHEET.THERAPISTS);
+    const headers = POS_getHeaders_(sheet);
+    const headerMap = POS_getHeaderMap_(headers);
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) throw new Error('Belum ada data terapis.');
+    const values = sheet.getRange(2, 1, lastRow - 1, headers.length).getValues();
+    for (let i = 0; i < values.length; i++) {
+      if (POS_toString_(values[i][headerMap.Therapist_ID]) === therapistId) {
+        sheet.getRange(i + 2, headerMap.Active + 1).setValue('TRUE');
+        sheet.getRange(i + 2, headerMap.Updated_At + 1).setValue(POS_nowString_());
+        SpreadsheetApp.flush();
+        return { success: true, message: 'Terapis diaktifkan kembali.' };
+      }
+    }
+    throw new Error('Terapis tidak ditemukan.');
+  } catch (error) {
+    return POS_errorResponse_(error);
+  } finally { try { lock.releaseLock(); } catch (e) {} }
+}
+
+/** Ambil semua data master terapis. includeInactive default true (untuk tampilan master). */
+function getTherapists(payload) {
+  try {
+    const includeInactive = !(payload && payload.activeOnly === true);
+    const rows = POS_readObjects_(POS_SHEET.THERAPISTS)
+      .filter(row => POS_toString_(row.Therapist_ID));
+    const therapists = rows.map(row => ({
+      therapistId: POS_toString_(row.Therapist_ID),
+      therapistName: POS_toString_(row.Therapist_Name),
+      phone: POS_toString_(row.Phone),
+      defaultPointValue: POS_toNumber_(row.Default_Point_Value),
+      active: POS_toBoolean_(row.Active),
+      notes: POS_toString_(row.Notes),
+      createdAt: POS_toString_(row.Created_At),
+      updatedAt: POS_toString_(row.Updated_At)
+    })).filter(t => includeInactive ? true : t.active)
+      .sort((a, b) => a.therapistName.localeCompare(b.therapistName));
+    return { success: true, message: 'Data terapis berhasil dimuat.', data: { therapists: therapists } };
+  } catch (error) { return POS_errorResponse_(error); }
+}
+
+/* =====================================================
+   THERAPIST POINTS (kasir input point per transaksi)
+===================================================== */
+
+/**
+ * Kasir mencatat point terapis (1 entry = 1 layanan untuk 1 terapis).
+ * Bisa multi-line dengan payload.entries = [{therapistId, serviceName, qty, pointPerUnit, amount, notes}, ...]
+ * atau single entry langsung pada payload (kompatibilitas).
+ */
+function saveTherapistPoint(payload) {
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(15000);
+    const cashierName = POS_toString_(payload && payload.cashierName).trim();
+    if (!cashierName) throw new Error('Nama kasir tidak ditemukan. Silakan login ulang.');
+
+    let entries = [];
+    if (payload && Array.isArray(payload.entries) && payload.entries.length > 0) {
+      entries = payload.entries;
+    } else if (payload) {
+      entries = [payload];
+    }
+    if (entries.length === 0) throw new Error('Belum ada data point yang akan disimpan.');
+
+    // Build therapist lookup
+    const therapistRows = POS_readObjects_(POS_SHEET.THERAPISTS);
+    const therapistMap = {};
+    therapistRows.forEach(t => {
+      const id = POS_toString_(t.Therapist_ID);
+      if (id) therapistMap[id] = t;
+    });
+
+    const today = POS_todayString_();
+    const time = POS_timeString_();
+    const now = POS_nowString_();
+    const rowsToInsert = [];
+
+    entries.forEach((e, idx) => {
+      const therapistId = POS_toString_(e.therapistId).trim();
+      const serviceName = POS_toString_(e.serviceName).trim() || 'Layanan';
+      const qty = POS_toNumber_(e.qty) || 1;
+      const pointPerUnit = POS_toNumber_(e.pointPerUnit);
+      const amount = POS_toNumber_(e.amount);
+      const notes = POS_toString_(e.notes).trim();
+      const explicitDate = POS_toString_(e.date).trim(); // opsional, kalau kasir mau input untuk tanggal lalu
+
+      if (!therapistId) throw new Error('Baris #' + (idx + 1) + ': pilih terapis terlebih dahulu.');
+      if (!therapistMap[therapistId]) throw new Error('Baris #' + (idx + 1) + ': terapis tidak ditemukan.');
+      if (qty <= 0) throw new Error('Baris #' + (idx + 1) + ': qty harus > 0.');
+      if (pointPerUnit < 0) throw new Error('Baris #' + (idx + 1) + ': point per unit tidak boleh negatif.');
+
+      const therapistName = POS_toString_(therapistMap[therapistId].Therapist_Name);
+      const totalPoint = qty * pointPerUnit;
+      const useDate = explicitDate && /^\d{4}-\d{2}-\d{2}$/.test(explicitDate) ? explicitDate : today;
+
+      rowsToInsert.push({
+        Point_ID: POS_generatePointId_(idx),
+        Date: useDate,
+        Time: time,
+        Therapist_ID: therapistId,
+        Therapist_Name: therapistName,
+        Service_Name: serviceName,
+        Qty: qty,
+        Point_Per_Unit: pointPerUnit,
+        Total_Point: totalPoint,
+        Amount: amount,
+        Cashier_Name: cashierName,
+        Notes: notes,
+        Created_At: now
+      });
+    });
+
+    POS_appendObjects_(POS_SHEET.THERAPIST_POINTS, rowsToInsert);
+    SpreadsheetApp.flush();
+
+    return {
+      success: true,
+      message: 'Berhasil menyimpan ' + rowsToInsert.length + ' entri point terapis.',
+      data: { count: rowsToInsert.length, rows: rowsToInsert }
+    };
+  } catch (error) {
+    return POS_errorResponse_(error);
+  } finally { try { lock.releaseLock(); } catch (e) {} }
+}
+
+/**
+ * Ambil log point untuk ditampilkan di tab terapis (kasir).
+ * Opsi filter: { startDate, endDate, therapistId }.
+ */
+function getTherapistPoints(payload) {
+  try {
+    const filter = payload || {};
+    const today = POS_todayString_();
+    const range = POS_resolveDashboardRange_(filter, today);
+    const therapistId = POS_toString_(filter.therapistId).trim();
+
+    const rows = POS_readObjects_(POS_SHEET.THERAPIST_POINTS)
+      .filter(r => POS_toString_(r.Point_ID))
+      .filter(r => POS_isDateInRange_(r.Date, range.startDate, range.endDate))
+      .filter(r => therapistId ? POS_toString_(r.Therapist_ID) === therapistId : true)
+      .map(r => ({
+        pointId: POS_toString_(r.Point_ID),
+        date: POS_toString_(r.Date),
+        time: POS_toString_(r.Time),
+        therapistId: POS_toString_(r.Therapist_ID),
+        therapistName: POS_toString_(r.Therapist_Name),
+        serviceName: POS_toString_(r.Service_Name),
+        qty: POS_toNumber_(r.Qty),
+        pointPerUnit: POS_toNumber_(r.Point_Per_Unit),
+        totalPoint: POS_toNumber_(r.Total_Point),
+        amount: POS_toNumber_(r.Amount),
+        cashierName: POS_toString_(r.Cashier_Name),
+        notes: POS_toString_(r.Notes)
+      }))
+      .sort((a, b) => (b.date + ' ' + b.time).localeCompare(a.date + ' ' + a.time));
+
+    const summary = rows.reduce((s, r) => {
+      s.totalPoint += r.totalPoint;
+      s.totalAmount += r.amount;
+      s.count += 1;
+      return s;
+    }, { totalPoint: 0, totalAmount: 0, count: 0 });
+
+    return {
+      success: true,
+      message: 'Data point terapis berhasil dimuat.',
+      data: {
+        range: range,
+        rows: rows,
+        summary: summary
+      }
+    };
+  } catch (error) { return POS_errorResponse_(error); }
+}
+
+/** Hapus 1 entry point (hanya jika diberi password — gunakan superadmin atau therapist). */
+function deleteTherapistPoint(payload) {
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(10000);
+    const pointId = POS_toString_(payload && payload.pointId).trim();
+    if (!pointId) throw new Error('Point ID wajib diisi.');
+    const sheet = POS_getSheet_(POS_SHEET.THERAPIST_POINTS);
+    const headers = POS_getHeaders_(sheet);
+    const headerMap = POS_getHeaderMap_(headers);
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) throw new Error('Belum ada data point.');
+    const values = sheet.getRange(2, 1, lastRow - 1, headers.length).getValues();
+    for (let i = 0; i < values.length; i++) {
+      if (POS_toString_(values[i][headerMap.Point_ID]) === pointId) {
+        sheet.deleteRow(i + 2);
+        SpreadsheetApp.flush();
+        return { success: true, message: 'Entri point dihapus.' };
+      }
+    }
+    throw new Error('Point tidak ditemukan.');
+  } catch (error) {
+    return POS_errorResponse_(error);
+  } finally { try { lock.releaseLock(); } catch (e) {} }
+}
+
+/* =====================================================
+   THERAPIST CONSOLIDATION (Superadmin)
+===================================================== */
+
+/**
+ * Konsolidasi settlement terapis pada range tertentu.
+ *
+ * Formula per terapis:
+ *   total_point_nominal = SUM(Total_Point * Point_Per_Unit) ATAU SUM(Amount) bila dipakai
+ *   share              = total_point_nominal * (THERAPIST_SHARE_PERCENT / 100)
+ *   kasbon             = SUM(EXPENSES.Amount) WHERE Expense_Type='Therapist' AND Personal_Cashier=therapistName
+ *   net_payout         = share - kasbon
+ *
+ * Catatan: "nilai nominal point" dihitung sebagai SUM(Qty * Point_Per_Unit) supaya tidak
+ * tergantung field Amount (yang bisa kosong). Ini = Total_Point itu sendiri yang sudah
+ * dianggap rupiah ekuivalen. Jika user butuh "point murni" tanpa rupiah, gunakan
+ * Default_Point_Value dari master sebagai multiplier — tetapi paling fleksibel: pakai
+ * Point_Per_Unit yang sudah diinput per entri.
+ */
+function getTherapistConsolidation(payload) {
+  try {
+    const filter = payload || {};
+    const today = POS_todayString_();
+    const range = POS_resolveDashboardRange_(filter, today);
+
+    // Override share percent kalau dikirim, kalau tidak ambil dari config
+    let sharePercent;
+    if (filter.sharePercent !== undefined && filter.sharePercent !== null && filter.sharePercent !== '') {
+      sharePercent = POS_toNumber_(filter.sharePercent);
+    } else {
+      sharePercent = POS_toNumber_(POS_getConfigValue_('THERAPIST_SHARE_PERCENT', '50'));
+    }
+    if (sharePercent < 0) sharePercent = 0;
+    if (sharePercent > 100) sharePercent = 100;
+    const shareRatio = sharePercent / 100;
+
+    // 1. Ambil master terapis untuk header map nama
+    const therapists = POS_readObjects_(POS_SHEET.THERAPISTS)
+      .filter(r => POS_toString_(r.Therapist_ID));
+    const masterById = {};
+    const masterByName = {};
+    therapists.forEach(t => {
+      const id = POS_toString_(t.Therapist_ID);
+      const nm = POS_toString_(t.Therapist_Name);
+      masterById[id] = { id: id, name: nm, active: POS_toBoolean_(t.Active) };
+      if (nm) masterByName[nm.toLowerCase()] = id;
+    });
+
+    // 2. Ambil semua point dalam range
+    const points = POS_readObjects_(POS_SHEET.THERAPIST_POINTS)
+      .filter(r => POS_toString_(r.Point_ID))
+      .filter(r => POS_isDateInRange_(r.Date, range.startDate, range.endDate));
+
+    // 3. Ambil kasbon terapis dalam range (Expense_Type=Therapist)
+    const expenses = POS_readObjects_(POS_SHEET.EXPENSES).map(POS_normalizeExpenseRow_)
+      .filter(r => POS_toString_(r.Expense_Type) === 'Therapist')
+      .filter(r => POS_isDateInRange_(r.Date, range.startDate, range.endDate));
+
+    // 4. Bucket per therapist
+    const bucket = {}; // key = therapistId
+
+    function ensureBucket(id, fallbackName) {
+      if (!bucket[id]) {
+        const master = masterById[id];
+        bucket[id] = {
+          therapistId: id,
+          therapistName: master ? master.name : (fallbackName || id),
+          totalPoint: 0,
+          totalAmount: 0,
+          entriesCount: 0,
+          kasbon: 0,
+          kasbonCount: 0,
+          gross: 0,
+          share: 0,
+          netPayout: 0
+        };
+      }
+      return bucket[id];
+    }
+
+    points.forEach(p => {
+      const id = POS_toString_(p.Therapist_ID);
+      if (!id) return;
+      const b = ensureBucket(id, POS_toString_(p.Therapist_Name));
+      const totalPoint = POS_toNumber_(p.Total_Point);
+      const amount = POS_toNumber_(p.Amount);
+      b.totalPoint += totalPoint;
+      b.totalAmount += amount;
+      b.entriesCount += 1;
+    });
+
+    // Kasbon di-link via nama (Personal_Cashier). Coba match nama → id.
+    expenses.forEach(e => {
+      const nm = POS_toString_(e.Personal_Cashier).trim();
+      if (!nm) return;
+      let id = masterByName[nm.toLowerCase()];
+      if (!id) {
+        // terapis sudah dihapus / nama tidak match — buat bucket virtual berdasarkan nama
+        id = 'UNKNOWN__' + nm;
+      }
+      const b = ensureBucket(id, nm);
+      b.kasbon += POS_toNumber_(e.Amount);
+      b.kasbonCount += 1;
+    });
+
+    // 5. Hitung share & net
+    const result = Object.keys(bucket).map(id => {
+      const b = bucket[id];
+      // gross = total nominal point yang dipakai sebagai dasar bagi hasil.
+      // Pakai Total_Point (Qty * Point_Per_Unit) — yang sudah nominal rupiah ekuivalen.
+      b.gross = b.totalPoint;
+      b.share = Math.round(b.gross * shareRatio);
+      b.netPayout = b.share - b.kasbon;
+      return b;
+    }).sort((a, b) => b.netPayout - a.netPayout);
+
+    // 6. Summary global
+    const summary = result.reduce((s, r) => {
+      s.totalGross += r.gross;
+      s.totalShare += r.share;
+      s.totalKasbon += r.kasbon;
+      s.totalNet += r.netPayout;
+      s.totalEntries += r.entriesCount;
+      s.totalKasbonCount += r.kasbonCount;
+      return s;
+    }, { totalGross: 0, totalShare: 0, totalKasbon: 0, totalNet: 0, totalEntries: 0, totalKasbonCount: 0, therapistCount: result.length });
+
+    // 7. Breakdown harian (untuk chart)
+    const dates = POS_getDateStringsBetween_(range.startDate, range.endDate);
+    const dailyMap = {};
+    dates.forEach(d => { dailyMap[d] = { date: d, gross: 0, share: 0, kasbon: 0, net: 0 }; });
+    points.forEach(p => {
+      const d = POS_toString_(p.Date).slice(0, 10);
+      if (dailyMap[d]) {
+        dailyMap[d].gross += POS_toNumber_(p.Total_Point);
+      }
+    });
+    expenses.forEach(e => {
+      const d = POS_toString_(e.Date).slice(0, 10);
+      if (dailyMap[d]) {
+        dailyMap[d].kasbon += POS_toNumber_(e.Amount);
+      }
+    });
+    const daily = dates.map(d => {
+      const row = dailyMap[d];
+      row.share = Math.round(row.gross * shareRatio);
+      row.net = row.share - row.kasbon;
+      return row;
+    });
+
+    return {
+      success: true,
+      message: 'Konsolidasi terapis berhasil dimuat.',
+      data: {
+        range: range,
+        sharePercent: sharePercent,
+        therapists: result,
+        summary: summary,
+        daily: daily
+      }
+    };
+  } catch (error) { return POS_errorResponse_(error); }
+}
+
+/* =====================================================
+   ID GENERATORS (therapist & point)
+===================================================== */
+
+function POS_generateTherapistId_() {
+  const sheet = POS_getSheet_(POS_SHEET.THERAPISTS);
+  const lastRow = sheet.getLastRow();
+  let maxNum = 0;
+  if (lastRow >= 2) {
+    const headers = POS_getHeaders_(sheet);
+    const idx = headers.indexOf('Therapist_ID');
+    if (idx !== -1) {
+      const ids = sheet.getRange(2, idx + 1, lastRow - 1, 1).getValues();
+      ids.forEach(r => {
+        const m = /^T(\d+)$/.exec(POS_toString_(r[0]));
+        if (m) {
+          const n = parseInt(m[1], 10);
+          if (n > maxNum) maxNum = n;
+        }
+      });
+    }
+  }
+  const nextNum = maxNum + 1;
+  return 'T' + ('000' + nextNum).slice(-3);
+}
+
+function POS_generatePointId_(extra) {
+  const now = POS_now_();
+  const datePart = Utilities.formatDate(now, POS_getTimezone_(), 'yyyyMMdd');
+  const timePart = Utilities.formatDate(now, POS_getTimezone_(), 'HHmmss');
+  const randomPart = Math.floor(Math.random() * 900 + 100);
+  const suffix = extra !== undefined ? '-' + extra : '';
+  return 'PT-' + datePart + '-' + timePart + '-' + randomPart + suffix;
+}

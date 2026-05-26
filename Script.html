@@ -1,0 +1,2823 @@
+<script>
+  const state = {
+    cashierName: '',
+    config: {
+      storeName: 'Pos  System',
+      taxRate: 0,
+      serviceRate: 0,
+      lowStockLimit: 10
+    },
+    menus: [],
+    categories: [],
+    selectedCategory: 'All',
+    cart: [],
+    paymentMethod: 'Cash',
+    paidAmount: 0,
+    isLoading: false,
+    protectedTarget: '',
+    dashboardUnlocked: false,
+    configUnlocked: false,
+    dashboardData: null,
+    expenses: [],
+    expenseFiltersReady: false,
+    lastReceipt: null,
+    pendingCheckoutPayload: null,
+    therapists: [],
+    therapistPoints: [],
+    konsolidasiData: null,
+    therapistUnlocked: false,
+    superadminUnlocked: false,
+    therapistFormMode: 'add', // 'add' or 'edit'
+  };
+
+  document.addEventListener('DOMContentLoaded', initApp);
+
+  function initApp() {
+    const savedCashier = localStorage.getItem('pos_cashier_name');
+
+    // Pasang delegasi klik untuk tombol preset filter tanggal dashboard & konsolidasi
+    document.addEventListener('click', function (event) {
+      const btn = event.target.closest('.preset-btn[data-preset]');
+      if (!btn) return;
+      event.preventDefault();
+      const preset = btn.getAttribute('data-preset');
+      const target = btn.getAttribute('data-preset-target');
+      if (target === 'konsolidasi') {
+        setKonsolidasiPreset(preset);
+      } else {
+        setDashboardPreset(preset);
+      }
+    });
+
+    if (savedCashier) {
+      state.cashierName = savedCashier;
+      showMainApp();
+      refreshInitialData();
+    } else {
+      showLoginScreen();
+    }
+  }
+
+  /* =====================================================
+     AUTH
+  ===================================================== */
+
+  function handleLogin() {
+    const cashierName = document.getElementById('cashierNameInput').value.trim();
+    const passcode = document.getElementById('cashierPasscodeInput').value.trim();
+    const errorEl = document.getElementById('loginError');
+
+    errorEl.textContent = '';
+
+    if (!cashierName) {
+      errorEl.textContent = 'Nama kasir wajib diisi.';
+      return;
+    }
+
+    if (!passcode) {
+      errorEl.textContent = 'Passcode wajib diisi.';
+      return;
+    }
+
+    setLoading(true, 'Login kasir...');
+
+    google.script.run
+      .withSuccessHandler(function (res) {
+        setLoading(false);
+
+        if (!res.success) {
+          errorEl.textContent = res.message || 'Login gagal.';
+          return;
+        }
+
+        state.cashierName = res.data.cashierName;
+        localStorage.setItem('pos_cashier_name', state.cashierName);
+
+        showMainApp();
+        refreshInitialData();
+        showToast('Login berhasil. Selamat bekerja, ' + state.cashierName + '.');
+      })
+      .withFailureHandler(function (err) {
+        setLoading(false);
+        errorEl.textContent = getErrorMessage(err);
+      })
+      .validateCashierLogin({
+        cashierName,
+        passcode
+      });
+  }
+
+  function handleLogout() {
+    localStorage.removeItem('pos_cashier_name');
+    sessionStorage.clear();
+
+    state.cashierName = '';
+    state.cart = [];
+    state.paidAmount = 0;
+    state.paymentMethod = 'Cash';
+    state.dashboardUnlocked = false;
+    state.configUnlocked = false;
+
+    showLoginScreen();
+  }
+
+  function showLoginScreen() {
+    document.getElementById('loginScreen').classList.remove('hidden');
+    document.getElementById('mainApp').classList.add('hidden');
+  }
+
+  function showMainApp() {
+    document.getElementById('loginScreen').classList.add('hidden');
+    document.getElementById('mainApp').classList.remove('hidden');
+
+    document.getElementById('sidebarCashierName').textContent = state.cashierName || '-';
+    document.getElementById('topbarCashierName').textContent = state.cashierName || 'Kasir';
+  }
+
+
+  /* =====================================================
+     CASHIER MOBILE MENU
+  ===================================================== */
+
+  function toggleCashierMenu(event) {
+    if (event && event.stopPropagation) event.stopPropagation();
+    const menu = document.getElementById('cashierDropdown');
+    if (!menu) return;
+    menu.classList.toggle('show');
+  }
+
+  function closeCashierMenu() {
+    const menu = document.getElementById('cashierDropdown');
+    if (menu) menu.classList.remove('show');
+  }
+
+  function handleCashierMenuAction(action) {
+    closeCashierMenu();
+
+    if (action === 'refresh') {
+      refreshInitialData();
+      return;
+    }
+
+    if (action === 'logout') {
+      handleLogout();
+      return;
+    }
+
+    switchTab(action);
+  }
+
+  document.addEventListener('click', function (event) {
+    const wrapper = document.querySelector('.cashier-wrapper');
+    if (!wrapper) return;
+    if (!wrapper.contains(event.target)) closeCashierMenu();
+  });
+
+  /* =====================================================
+     DATA LOAD
+  ===================================================== */
+
+  function refreshInitialData() {
+    setLoading(true, 'Mengambil data menu...');
+
+    google.script.run
+      .withSuccessHandler(function (res) {
+        setLoading(false);
+
+        if (!res.success) {
+          showToast(res.message || 'Gagal memuat data.', 'error');
+          return;
+        }
+
+        state.config = res.data.config || state.config;
+        state.menus = (res.data.menus && res.data.menus.menus) || [];
+        state.categories = (res.data.menus && res.data.menus.categories) || [];
+
+        syncBrand();
+        renderCategoryFilter();
+        renderMenus();
+        renderCart();
+        updateSummary();
+
+        showToast('Data berhasil dimuat.');
+      })
+      .withFailureHandler(function (err) {
+        setLoading(false);
+        showToast(getErrorMessage(err), 'error');
+      })
+      .getInitialData();
+  }
+
+  function syncBrand() {
+    document.getElementById('sidebarStoreName').textContent = state.config.storeName || 'Kedai Kopi';
+    document.getElementById('summaryTaxLabel').textContent = 'Tax ' + (state.config.taxRate || 0) + '%';
+    document.getElementById('summaryServiceLabel').textContent = 'Service ' + (state.config.serviceRate || 0) + '%';
+
+    document.getElementById('mobileSummaryTaxLabel').textContent = 'Tax ' + (state.config.taxRate || 0) + '%';
+    document.getElementById('mobileSummaryServiceLabel').textContent = 'Service ' + (state.config.serviceRate || 0) + '%';
+
+    renderQuickCashButtons();
+  }
+
+  /* =====================================================
+     TABS
+  ===================================================== */
+
+  function switchTab(tabName) {
+    const titles = {
+      pos: 'POS Kasir',
+      stock: 'Manage Stock',
+      pengeluaran: 'Pengeluaran',
+      terapis: 'Master Terapis',
+      dashboard: 'Dashboard Profit',
+      konsolidasi: 'Konsolidasi Superadmin',
+      config: 'Config'
+    };
+
+    document.querySelectorAll('.tab-panel').forEach(function (panel) {
+      panel.classList.remove('active');
+    });
+
+    document.getElementById('tab-' + tabName).classList.add('active');
+
+    document.querySelectorAll('.nav-item, .mobile-nav-item').forEach(function (btn) {
+      btn.classList.remove('active');
+
+      if (btn.dataset.tab === tabName) {
+        btn.classList.add('active');
+      }
+    });
+
+    document.getElementById('pageTitle').textContent = titles[tabName] || 'POS';
+
+    const mobileCartButton = document.getElementById('mobileCartButton');
+
+    if (tabName === 'pos') {
+      mobileCartButton.style.display = '';
+    } else {
+      mobileCartButton.style.display = 'none';
+      closeMobileCart();
+    }
+
+    if (tabName === 'stock') {
+      renderStockTable();
+    }
+
+    if (tabName === 'pengeluaran') {
+      loadPengeluaranData();
+    }
+
+    if (tabName === 'terapis') {
+      if (state.therapistUnlocked || sessionStorage.getItem('pos_therapist_unlocked') === 'true') {
+        state.therapistUnlocked = true;
+        showTherapistContent();
+        loadTherapistData();
+      }
+    }
+
+    if (tabName === 'dashboard') {
+      if (state.dashboardUnlocked || sessionStorage.getItem('pos_dashboard_unlocked') === 'true') {
+        state.dashboardUnlocked = true;
+        showDashboardContent();
+        loadDashboardData();
+      }
+    }
+
+    if (tabName === 'konsolidasi') {
+      if (state.superadminUnlocked || sessionStorage.getItem('pos_superadmin_unlocked') === 'true') {
+        state.superadminUnlocked = true;
+        showKonsolidasiContent();
+        loadKonsolidasiData();
+      }
+    }
+
+    if (tabName === 'config') {
+      if (state.configUnlocked || sessionStorage.getItem('pos_config_unlocked') === 'true') {
+        state.configUnlocked = true;
+        showConfigContent();
+        fillConfigForm();
+      }
+    }
+  }
+
+  /* =====================================================
+     MENU RENDER
+  ===================================================== */
+
+  function renderCategoryFilter() {
+    const wrapper = document.getElementById('categoryFilter');
+    const categories = ['All'].concat(state.categories || []);
+
+    wrapper.innerHTML = categories
+      .map(function (category) {
+        const activeClass = state.selectedCategory === category ? 'active' : '';
+
+        return `
+          <button class="category-chip ${activeClass}" onclick="selectCategory('${escapeHtml(category)}')">
+            ${escapeHtml(category)}
+          </button>
+        `;
+      })
+      .join('');
+  }
+
+  function selectCategory(category) {
+    state.selectedCategory = category;
+    renderCategoryFilter();
+    renderMenus();
+  }
+
+  function renderMenus() {
+    const grid = document.getElementById('menuGrid');
+    const searchValue = document.getElementById('menuSearchInput').value.toLowerCase().trim();
+
+    let filteredMenus = state.menus || [];
+
+    if (state.selectedCategory !== 'All') {
+      filteredMenus = filteredMenus.filter(function (menu) {
+        return menu.category === state.selectedCategory;
+      });
+    }
+
+    if (searchValue) {
+      filteredMenus = filteredMenus.filter(function (menu) {
+        return (
+          String(menu.menuName || '').toLowerCase().includes(searchValue) ||
+          String(menu.category || '').toLowerCase().includes(searchValue)
+        );
+      });
+    }
+
+    if (filteredMenus.length === 0) {
+      grid.innerHTML = `
+        <div class="empty-cart" style="grid-column: 1 / -1;">
+          Menu tidak ditemukan.
+        </div>
+      `;
+      return;
+    }
+
+    grid.innerHTML = filteredMenus
+      .map(function (menu) {
+        const isOut = Number(menu.stock || 0) <= 0;
+        const badge = getStockBadge(menu);
+        const safeImage = menu.imageUrl || '';
+
+        return `
+          <article class="menu-card ${isOut ? 'disabled' : ''}">
+            <div class="menu-image">
+              ${
+                safeImage
+                  ? `<img src="${escapeAttr(safeImage)}" loading="lazy" onerror="this.style.display='none'; this.parentElement.innerHTML='<div style=&quot;display:grid;place-items:center;height:100%;font-size:34px;&quot;>☕</div>';" />`
+                  : `<div style="display:grid;place-items:center;height:100%;font-size:34px;">☕</div>`
+              }
+            </div>
+
+            <div class="menu-card-body">
+              <div class="menu-meta">
+                <div>
+                  <h3 class="menu-name">${escapeHtml(menu.menuName)}</h3>
+                  <p class="menu-category">${escapeHtml(menu.category)}</p>
+                </div>
+                ${badge}
+              </div>
+
+              <div class="menu-bottom">
+                <div>
+                  <div class="menu-price">${formatRupiah(menu.price)}</div>
+                  <div class="menu-category">Stock: ${Number(menu.stock || 0)}</div>
+                </div>
+
+                <button
+                  class="add-btn"
+                  ${isOut ? 'disabled' : ''}
+                  onclick="addToCart('${escapeAttr(menu.menuId)}')"
+                >
+                  + Add
+                </button>
+              </div>
+            </div>
+          </article>
+        `;
+      })
+      .join('');
+  }
+
+  function getStockBadge(menu) {
+    const stock = Number(menu.stock || 0);
+
+    if (stock <= 0 || menu.stockStatus === 'Out of Stock') {
+      return `<span class="stock-badge stock-out">● Habis</span>`;
+    }
+
+    if (menu.stockStatus === 'Low Stock' || stock <= Number(state.config.lowStockLimit || 10)) {
+      return `<span class="stock-badge stock-low">● Sisa Sedikit</span>`;
+    }
+
+    return `<span class="stock-badge stock-available">● Ready</span>`;
+  }
+
+  /* =====================================================
+     CART
+  ===================================================== */
+
+  function addToCart(menuId) {
+    const menu = state.menus.find(function (item) {
+      return item.menuId === menuId;
+    });
+
+    if (!menu) {
+      showToast('Menu tidak ditemukan.', 'error');
+      return;
+    }
+
+    if (Number(menu.stock || 0) <= 0) {
+      showToast('Menu sedang habis.', 'error');
+      return;
+    }
+
+    const existing = state.cart.find(function (item) {
+      return item.menuId === menuId;
+    });
+
+    if (existing) {
+      if (existing.qty + 1 > Number(menu.stock || 0)) {
+        showToast('Stock ' + menu.menuName + ' tidak cukup.', 'error');
+        return;
+      }
+
+      existing.qty += 1;
+    } else {
+      state.cart.push({
+        menuId: menu.menuId,
+        menuName: menu.menuName,
+        category: menu.category,
+        price: Number(menu.price || 0),
+        stock: Number(menu.stock || 0),
+        qty: 1
+      });
+    }
+
+    renderCart();
+    updateSummary();
+  }
+
+  function increaseQty(menuId) {
+    const cartItem = state.cart.find(function (item) {
+      return item.menuId === menuId;
+    });
+
+    const menu = state.menus.find(function (item) {
+      return item.menuId === menuId;
+    });
+
+    if (!cartItem || !menu) return;
+
+    if (cartItem.qty + 1 > Number(menu.stock || 0)) {
+      showToast('Stock tidak cukup. Sisa stock: ' + menu.stock, 'error');
+      return;
+    }
+
+    cartItem.qty += 1;
+    renderCart();
+    updateSummary();
+  }
+
+  function decreaseQty(menuId) {
+    const cartItem = state.cart.find(function (item) {
+      return item.menuId === menuId;
+    });
+
+    if (!cartItem) return;
+
+    cartItem.qty -= 1;
+
+    if (cartItem.qty <= 0) {
+      removeFromCart(menuId);
+      return;
+    }
+
+    renderCart();
+    updateSummary();
+  }
+
+  function removeFromCart(menuId) {
+    state.cart = state.cart.filter(function (item) {
+      return item.menuId !== menuId;
+    });
+
+    renderCart();
+    updateSummary();
+  }
+
+  function clearCart() {
+    if (state.cart.length === 0) return;
+
+    const confirmed = confirm('Kosongkan semua item di cart?');
+
+    if (!confirmed) return;
+
+    state.cart = [];
+    state.paidAmount = 0;
+
+    syncPaidInputs();
+    renderCart();
+    updateSummary();
+  }
+
+  function renderCart() {
+    const html = getCartHtml();
+
+    document.getElementById('cartItems').innerHTML = html;
+    document.getElementById('mobileCartItems').innerHTML = html;
+
+    const itemCount = state.cart.reduce(function (sum, item) {
+      return sum + Number(item.qty || 0);
+    }, 0);
+
+    document.getElementById('mobileCartCount').textContent = itemCount + ' item';
+  }
+
+  function getCartHtml() {
+    if (state.cart.length === 0) {
+      return `
+        <div class="empty-cart">
+          <strong>Cart masih kosong</strong>
+          <p>Pilih menu untuk mulai transaksi.</p>
+        </div>
+      `;
+    }
+
+    return state.cart
+      .map(function (item) {
+        const amount = Number(item.price || 0) * Number(item.qty || 0);
+
+        return `
+          <div class="cart-item">
+            <div>
+              <h4>${escapeHtml(item.menuName)}</h4>
+              <p>${formatRupiah(item.price)} x ${item.qty}</p>
+              <p><strong>${formatRupiah(amount)}</strong></p>
+              <button class="remove-btn" onclick="removeFromCart('${escapeAttr(item.menuId)}')">
+                Hapus
+              </button>
+            </div>
+
+            <div class="qty-control">
+              <button class="qty-btn" onclick="decreaseQty('${escapeAttr(item.menuId)}')">−</button>
+              <span class="qty-number">${item.qty}</span>
+              <button class="qty-btn" onclick="increaseQty('${escapeAttr(item.menuId)}')">+</button>
+            </div>
+          </div>
+        `;
+      })
+      .join('');
+  }
+
+  /* =====================================================
+     PAYMENT + SUMMARY
+  ===================================================== */
+
+  function setPaymentMethod(method) {
+    state.paymentMethod = method;
+
+    document.querySelectorAll('.payment-btn').forEach(function (btn) {
+      btn.classList.remove('active');
+
+      if (btn.dataset.method === method) {
+        btn.classList.add('active');
+      }
+    });
+
+    const showCash = method === 'Cash';
+
+    document.getElementById('cashInputWrapper').style.display = showCash ? '' : 'none';
+    document.getElementById('mobileCashInputWrapper').style.display = showCash ? '' : 'none';
+
+    if (!showCash) {
+      state.paidAmount = calculateTotals().roundedTotal;
+      syncPaidInputs();
+    }
+
+    renderQuickCashButtons();
+    renderPaymentMethodInfo();
+    updateSummary();
+  }
+
+  function renderPaymentMethodInfo() {
+    const desktop = document.getElementById('paymentMethodInfo');
+    const mobile = document.getElementById('mobilePaymentMethodInfo');
+
+    if (!desktop || !mobile) return;
+
+    let text = '';
+
+    if (state.paymentMethod === 'QRIS') {
+      text = 'QRIS akan ditampilkan saat checkout. Transaksi disimpan setelah kasir klik Sudah Dibayar.';
+    }
+
+    if (state.paymentMethod === 'Transfer') {
+      text = 'Detail rekening akan ditampilkan saat checkout. Transaksi disimpan setelah kasir klik Sudah Dibayar.';
+    }
+
+    if (!text) {
+      desktop.classList.add('hidden');
+      mobile.classList.add('hidden');
+      desktop.textContent = '';
+      mobile.textContent = '';
+      return;
+    }
+
+    desktop.textContent = text;
+    mobile.textContent = text;
+    desktop.classList.remove('hidden');
+    mobile.classList.remove('hidden');
+  }
+
+  function handlePaidInput(inputEl) {
+    const rawNumber = parseRupiah(inputEl.value);
+    state.paidAmount = rawNumber;
+
+    const formatted = rawNumber > 0 ? formatRupiah(rawNumber) : '';
+    inputEl.value = formatted;
+
+    syncPaidInputs(inputEl.id);
+    updateSummary();
+  }
+
+  function syncPaidInputs(sourceId) {
+    const formatted = state.paidAmount > 0 ? formatRupiah(state.paidAmount) : '';
+
+    const desktopInput = document.getElementById('paidAmountInput');
+    const mobileInput = document.getElementById('mobilePaidAmountInput');
+
+    if (sourceId !== 'paidAmountInput') {
+      desktopInput.value = formatted;
+    }
+
+    if (sourceId !== 'mobilePaidAmountInput') {
+      mobileInput.value = formatted;
+    }
+  }
+
+  function calculateTotals() {
+    const subtotal = state.cart.reduce(function (sum, item) {
+      return sum + Number(item.price || 0) * Number(item.qty || 0);
+    }, 0);
+
+    const taxRate = Number(state.config.taxRate || 0);
+    const serviceRate = Number(state.config.serviceRate || 0);
+
+    const taxAmount = Math.round(subtotal * taxRate / 100);
+    const serviceAmount = Math.round(subtotal * serviceRate / 100);
+    const grandTotal = subtotal + taxAmount + serviceAmount;
+    const roundedTotal = Math.round(grandTotal / 100) * 100;
+
+    return {
+      subtotal,
+      taxRate,
+      taxAmount,
+      serviceRate,
+      serviceAmount,
+      grandTotal,
+      roundedTotal
+    };
+  }
+
+  function updateSummary() {
+    const totals = calculateTotals();
+
+    if (state.paymentMethod !== 'Cash') {
+      state.paidAmount = totals.roundedTotal;
+      syncPaidInputs();
+    }
+
+    const changeAmount =
+      state.paymentMethod === 'Cash'
+        ? Math.max(0, Number(state.paidAmount || 0) - totals.roundedTotal)
+        : 0;
+
+    setText('summarySubtotal', formatRupiah(totals.subtotal));
+    setText('summaryTax', formatRupiah(totals.taxAmount));
+    setText('summaryService', formatRupiah(totals.serviceAmount));
+    setText('summaryTotal', formatRupiah(totals.roundedTotal));
+    setText('summaryChange', formatRupiah(changeAmount));
+
+    setText('mobileSummarySubtotal', formatRupiah(totals.subtotal));
+    setText('mobileSummaryTax', formatRupiah(totals.taxAmount));
+    setText('mobileSummaryService', formatRupiah(totals.serviceAmount));
+    setText('mobileSummaryTotal', formatRupiah(totals.roundedTotal));
+    setText('mobileSummaryChange', formatRupiah(changeAmount));
+
+    setText('mobileCartTotal', formatRupiah(totals.roundedTotal));
+
+    renderQuickCashButtons();
+  }
+
+  /* =====================================================
+     CHECKOUT
+  ===================================================== */
+
+  function handleCheckout() {
+  if (state.cart.length === 0) {
+    showToast('Cart masih kosong.', 'error');
+    return;
+  }
+
+  const totals = calculateTotals();
+
+  if (state.paymentMethod === 'Cash' && Number(state.paidAmount || 0) < totals.roundedTotal) {
+    showToast('Uang bayar kurang dari total pembayaran.', 'error');
+    return;
+  }
+
+  const payload = {
+    cashierName: state.cashierName,
+    paymentMethod: state.paymentMethod,
+    paidAmount: state.paymentMethod === 'Cash' ? state.paidAmount : totals.roundedTotal,
+    items: state.cart.map(function (item) {
+      return {
+        menuId: item.menuId,
+        qty: item.qty
+      };
+    })
+  };
+
+  if (state.paymentMethod === 'QRIS' || state.paymentMethod === 'Transfer') {
+    state.pendingCheckoutPayload = payload;
+    openNonCashPaymentModal(state.paymentMethod, totals.roundedTotal);
+    return;
+  }
+
+  submitCheckout(payload);
+}
+
+  function showSuccessModal(transactionId) {
+    document.getElementById('successTransactionId').textContent =
+      'No Transaksi: ' + transactionId;
+
+    renderReceiptPreviews();
+    switchReceiptTab('payment');
+
+    document.getElementById('successModal').classList.remove('hidden');
+  }
+
+  /* =====================================================
+     MOBILE CART
+  ===================================================== */
+
+  function openMobileCart() {
+    document.getElementById('mobileCartOverlay').classList.add('show');
+    document.getElementById('mobileCartSheet').classList.add('show');
+  }
+
+  function closeMobileCart() {
+    document.getElementById('mobileCartOverlay').classList.remove('show');
+    document.getElementById('mobileCartSheet').classList.remove('show');
+  }
+
+  /* =====================================================
+     UI HELPERS
+  ===================================================== */
+
+  function setLoading(isLoading, text) {
+    state.isLoading = isLoading;
+
+    const overlay = document.getElementById('loadingOverlay');
+    const loadingText = document.getElementById('loadingText');
+
+    loadingText.textContent = text || 'Memproses...';
+
+    if (isLoading) {
+      overlay.classList.remove('hidden');
+    } else {
+      overlay.classList.add('hidden');
+    }
+  }
+
+  function showToast(message, type) {
+    const toast = document.getElementById('toast');
+
+    toast.textContent = message;
+    toast.className = 'toast';
+
+    if (type === 'error') {
+      toast.classList.add('error');
+    }
+
+    toast.classList.remove('hidden');
+
+    setTimeout(function () {
+      toast.classList.add('hidden');
+    }, 2600);
+  }
+
+  function setText(id, text) {
+    const el = document.getElementById(id);
+
+    if (el) {
+      el.textContent = text;
+    }
+  }
+
+  function getErrorMessage(err) {
+    if (!err) return 'Terjadi error.';
+    if (err.message) return err.message;
+    return String(err);
+  }
+
+  /* =====================================================
+     FORMAT HELPERS
+  ===================================================== */
+
+  function formatRupiah(value) {
+    const number = Number(value || 0);
+
+    return 'Rp ' + number.toLocaleString('id-ID');
+  }
+
+  function parseRupiah(value) {
+    if (!value) return 0;
+
+    const cleaned = String(value).replace(/[^\d]/g, '');
+    const number = Number(cleaned);
+
+    return Number.isFinite(number) ? number : 0;
+  }
+
+  function escapeHtml(value) {
+    return String(value || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  function escapeAttr(value) {
+    return escapeHtml(value).replace(/`/g, '&#096;');
+  }
+
+  /* =====================================================
+   QUICK CASH BUTTONS
+===================================================== */
+
+function renderQuickCashButtons() {
+  const desktop = document.getElementById('quickCashButtons');
+  const mobile = document.getElementById('mobileQuickCashButtons');
+
+  if (!desktop || !mobile) return;
+
+  const totals = calculateTotals();
+  const total = Number(totals.roundedTotal || 0);
+
+  if (total <= 0 || state.paymentMethod !== 'Cash') {
+    desktop.innerHTML = '';
+    mobile.innerHTML = '';
+    return;
+  }
+
+  const options = getQuickCashOptions(total);
+
+  const html = options
+    .map(function (amount) {
+      return `
+        <button class="quick-cash-btn" onclick="setQuickCash(${amount})">
+          ${formatRupiah(amount)}
+        </button>
+      `;
+    })
+    .join('');
+
+  desktop.innerHTML = html;
+  mobile.innerHTML = html;
+}
+
+function getQuickCashOptions(total) {
+  const options = [];
+
+  function add(value) {
+    if (value >= total && !options.includes(value)) {
+      options.push(value);
+    }
+  }
+
+  add(total);
+  add(Math.ceil(total / 1000) * 1000);
+  add(Math.ceil(total / 5000) * 5000);
+  add(Math.ceil(total / 10000) * 10000);
+  add(Math.ceil(total / 50000) * 50000);
+  add(Math.ceil(total / 100000) * 100000);
+
+  return options.slice(0, 4);
+}
+
+function setQuickCash(amount) {
+  state.paidAmount = Number(amount || 0);
+  syncPaidInputs();
+  updateSummary();
+}
+
+/* =====================================================
+   STOCK MANAGEMENT
+===================================================== */
+
+function renderStockTable() {
+  const tbody = document.getElementById('stockTableBody');
+
+  if (!tbody) return;
+
+  if (!state.menus || state.menus.length === 0) {
+    tbody.innerHTML = `
+      <tr>
+        <td colspan="7">Belum ada data menu.</td>
+      </tr>
+    `;
+    return;
+  }
+
+  tbody.innerHTML = state.menus
+    .map(function (menu) {
+      return `
+        <tr>
+          <td>
+            <div class="stock-menu-name">${escapeHtml(menu.menuName)}</div>
+            <small>${escapeHtml(menu.menuId)}</small>
+          </td>
+          <td>${escapeHtml(menu.category)}</td>
+          <td>${formatRupiah(menu.price)}</td>
+          <td>${formatRupiah(menu.cost || 0)}</td>
+          <td><strong>${Number(menu.stock || 0)}</strong></td>
+          <td>${getStockBadge(menu)}</td>
+          <td>
+            <div class="stock-actions">
+              <input
+                id="stockInput-${escapeAttr(menu.menuId)}"
+                type="number"
+                min="0"
+                placeholder="Qty"
+              />
+              <button class="stock-action-btn add" onclick="updateStock('${escapeAttr(menu.menuId)}', 'ADD')">
+                + Add
+              </button>
+              <button class="stock-action-btn reduce" onclick="updateStock('${escapeAttr(menu.menuId)}', 'REDUCE')">
+                - Reduce
+              </button>
+            </div>
+
+            <div class="stock-actions" style="margin-top:7px;">
+              <input
+                id="stockSetInput-${escapeAttr(menu.menuId)}"
+                type="number"
+                min="0"
+                placeholder="Set"
+              />
+              <button class="stock-action-btn" onclick="updateStock('${escapeAttr(menu.menuId)}', 'SET')">
+                Set
+              </button>
+            </div>
+            <div class="stock-actions" style="margin-top:7px;">
+              <input
+                id="costInput-${escapeAttr(menu.menuId)}"
+                type="number"
+                min="0"
+                placeholder="Modal"
+              />
+              <button class="stock-action-btn" onclick="updateCost('${escapeAttr(menu.menuId)}')">
+                Set Modal
+              </button>
+            </div>
+          </td>
+        </tr>
+      `;
+    })
+    .join('');
+}
+
+function updateStock(menuId, mode) {
+  const inputId = mode === 'SET' ? 'stockSetInput-' + menuId : 'stockInput-' + menuId;
+  const input = document.getElementById(inputId);
+  const stockValue = Number(input && input.value ? input.value : 0);
+
+  if (stockValue < 0 || !Number.isFinite(stockValue)) {
+    showToast('Input stock tidak valid.', 'error');
+    return;
+  }
+
+  if (mode !== 'SET' && stockValue <= 0) {
+    showToast('Qty update stock harus lebih dari 0.', 'error');
+    return;
+  }
+
+  setLoading(true, 'Update stock...');
+
+  google.script.run
+    .withSuccessHandler(function (res) {
+      setLoading(false);
+
+      if (!res.success) {
+        showToast(res.message || 'Gagal update stock.', 'error');
+        return;
+      }
+
+      showToast('Stock berhasil diperbarui.');
+
+      if (input) input.value = '';
+
+      refreshAfterStockUpdate();
+    })
+    .withFailureHandler(function (err) {
+      setLoading(false);
+      showToast(getErrorMessage(err), 'error');
+    })
+    .updateMenuStock({
+      menuId: menuId,
+      mode: mode,
+      stockValue: stockValue
+    });
+}
+
+function updateCost(menuId) {
+  const input = document.getElementById('costInput-' + menuId);
+  const costValue = Number(input && input.value ? input.value : 0);
+  if (costValue < 0 || !Number.isFinite(costValue)) {
+    showToast('Input modal/HPP tidak valid.', 'error');
+    return;
+  }
+  setLoading(true, 'Update modal/HPP...');
+  google.script.run
+    .withSuccessHandler(function (res) {
+      setLoading(false);
+      if (!res.success) {
+        showToast(res.message || 'Gagal update modal/HPP.', 'error');
+        return;
+      }
+      showToast('Modal/HPP berhasil diperbarui.');
+      if (input) input.value = '';
+      refreshAfterStockUpdate();
+    })
+    .withFailureHandler(function (err) {
+      setLoading(false);
+      showToast(getErrorMessage(err), 'error');
+    })
+    .updateMenuCost({ menuId: menuId, costValue: costValue });
+}
+
+function refreshAfterStockUpdate() {
+  google.script.run
+    .withSuccessHandler(function (res) {
+      if (!res.success) {
+        showToast(res.message || 'Gagal refresh menu.', 'error');
+        return;
+      }
+
+      state.menus = res.data.menus || [];
+      state.categories = res.data.categories || [];
+
+      renderCategoryFilter();
+      renderMenus();
+      renderStockTable();
+      renderCart();
+      updateSummary();
+    })
+    .withFailureHandler(function (err) {
+      showToast(getErrorMessage(err), 'error');
+    })
+    .getMenus();
+}
+
+/* =====================================================
+   PENGELUARAN MANAGEMENT
+===================================================== */
+
+function isPersonalExpenseCategory(category) {
+  const text = String(category || '').toLowerCase().trim();
+  return text.includes('kasbon') || text.includes('fee');
+}
+
+function getExpenseTypeByCategory(category) {
+  return isPersonalExpenseCategory(category) ? 'Personal' : 'Sharing';
+}
+
+function normalizeExpenseItem(item) {
+  const copy = Object.assign({}, item || {});
+  const type = getExpenseTypeByCategory(copy.Category);
+  copy.Expense_Type = type;
+  if (type === 'Personal' && !copy.Personal_Cashier) copy.Personal_Cashier = copy.Cashier_Name || state.cashierName || '';
+  if (type === 'Sharing') copy.Personal_Cashier = '';
+  return copy;
+}
+
+function getExpenseAmountValue(item) {
+  const value = item && item.Amount;
+  if (typeof value === 'number') return value;
+  return parseRupiah(value);
+}
+
+function handleExpenseCategoryChange() {
+  const category = getInputValue('expenseCategoryInput');
+  const type = getExpenseTypeByCategory(category);
+  setInputValue('expenseTypeInput', type);
+  const input = document.getElementById('expensePersonalCashierInput');
+  if (input) input.value = type === 'Personal' ? (state.cashierName || '') : '';
+  handleExpenseTypeChange();
+}
+
+function handleExpenseTypeChange() {
+  const type = getInputValue('expenseTypeInput') || 'Sharing';
+  const wrapper = document.getElementById('personalCashierWrapper');
+  if (wrapper) wrapper.style.display = type === 'Personal' ? '' : 'none';
+  if (type === 'Personal') {
+    const input = document.getElementById('expensePersonalCashierInput');
+    if (input && !input.value) input.value = state.cashierName || '';
+  }
+}
+
+function handleExpenseAmountInput(inputEl) {
+  const rawNumber = parseRupiah(inputEl.value);
+  inputEl.value = rawNumber > 0 ? formatRupiah(rawNumber) : '';
+}
+
+function saveExpense() {
+  const category = getInputValue('expenseCategoryInput');
+  const expenseType = getExpenseTypeByCategory(category);
+  const personalCashier = expenseType === 'Personal' ? (state.cashierName || getInputValue('expensePersonalCashierInput')) : '';
+  const description = getInputValue('expenseDescriptionInput');
+  const amount = parseRupiah(getInputValue('expenseAmountInput'));
+  if (!category) { showToast('Kategori pengeluaran wajib dipilih.', 'error'); return; }
+  if (expenseType === 'Personal' && !personalCashier) { showToast('Nama kasir penerima wajib ada dari login.', 'error'); return; }
+  if (!description) { showToast('Keterangan pengeluaran wajib diisi.', 'error'); return; }
+  if (amount <= 0) { showToast('Nilai pengeluaran harus lebih dari 0.', 'error'); return; }
+  setLoading(true, 'Menyimpan pengeluaran...');
+  google.script.run
+    .withSuccessHandler(function (res) {
+      setLoading(false);
+      if (!res.success) { showToast(res.message || 'Gagal menyimpan pengeluaran.', 'error'); return; }
+      clearExpenseForm();
+      showToast('Pengeluaran berhasil disimpan.');
+      loadPengeluaranData();
+      if (state.dashboardUnlocked || sessionStorage.getItem('pos_dashboard_unlocked') === 'true') loadDashboardData();
+    })
+    .withFailureHandler(function (err) { setLoading(false); showToast(getErrorMessage(err), 'error'); })
+    .addExpense({ cashierName: state.cashierName, expenseType: expenseType, personalCashier: personalCashier, category: category, description: description, amount: amount });
+}
+
+function clearExpenseForm() {
+  setInputValue('expenseTypeInput', 'Sharing');
+  setInputValue('expensePersonalCashierInput', '');
+  setInputValue('expenseCategoryInput', '');
+  setInputValue('expenseDescriptionInput', '');
+  setInputValue('expenseAmountInput', '');
+  handleExpenseTypeChange();
+}
+
+function loadPengeluaranData() {
+  const tbody = document.getElementById('pengeluaranTableBody');
+  if (tbody) tbody.innerHTML = '<tr><td colspan="7">Memuat data...</td></tr>';
+  google.script.run
+    .withSuccessHandler(function (res) {
+      if (!res.success) { showToast(res.message || 'Gagal memuat pengeluaran.', 'error'); return; }
+      state.expenses = (res.data.expenses || []).map(normalizeExpenseItem);
+      setupDefaultExpenseDateFilter();
+      populateExpenseFilterOptions();
+      renderPengeluaranTable();
+    })
+    .withFailureHandler(function (err) { showToast(getErrorMessage(err), 'error'); })
+    .getExpenses();
+}
+
+function setupDefaultExpenseDateFilter() {
+  if (state.expenseFiltersReady) return;
+  const startEl = document.getElementById('expenseFilterStartDate');
+  const endEl = document.getElementById('expenseFilterEndDate');
+  if (!startEl || !endEl) return;
+  const today = new Date();
+  const yyyy = today.getFullYear();
+  const mm = String(today.getMonth() + 1).padStart(2, '0');
+  const dd = String(today.getDate()).padStart(2, '0');
+  const todayString = yyyy + '-' + mm + '-' + dd;
+  startEl.value = todayString;
+  endEl.value = todayString;
+  state.expenseFiltersReady = true;
+}
+
+function populateExpenseFilterOptions() {
+  const categoryEl = document.getElementById('expenseFilterCategory');
+  if (!categoryEl) return;
+  const currentValue = categoryEl.value || 'All';
+  const categories = Array.from(new Set((state.expenses || []).map(item => String(item.Category || '').trim()).filter(Boolean))).sort((a,b)=>a.localeCompare(b));
+  categoryEl.innerHTML = '<option value="All">Semua Kategori</option>' + categories.map(category => '<option value="' + escapeAttr(category) + '">' + escapeHtml(category) + '</option>').join('');
+  if (categories.includes(currentValue)) categoryEl.value = currentValue;
+}
+
+function getFilteredExpenses() {
+  const startDate = getInputValue('expenseFilterStartDate');
+  const endDate = getInputValue('expenseFilterEndDate');
+  const type = getInputValue('expenseFilterType') || 'All';
+  const category = getInputValue('expenseFilterCategory') || 'All';
+  const cashierKeyword = getInputValue('expenseFilterCashier').toLowerCase();
+  const searchKeyword = getInputValue('expenseFilterSearch').toLowerCase();
+  const sortBy = getInputValue('expenseSortBy') || 'newest';
+  let rows = (state.expenses || []).map(normalizeExpenseItem).filter(function (item) {
+    const itemDate = String(item.Date || '');
+    const itemType = getExpenseTypeByCategory(item.Category);
+    const itemCategory = String(item.Category || '');
+    const inputBy = String(item.Cashier_Name || '').toLowerCase();
+    const personalCashier = String(item.Personal_Cashier || '').toLowerCase();
+    const description = String(item.Description || '').toLowerCase();
+    if (startDate && itemDate < startDate) return false;
+    if (endDate && itemDate > endDate) return false;
+    if (type !== 'All' && itemType !== type) return false;
+    if (category !== 'All' && itemCategory !== category) return false;
+    if (cashierKeyword && !(inputBy.includes(cashierKeyword) || personalCashier.includes(cashierKeyword))) return false;
+    if (searchKeyword && !(description.includes(searchKeyword) || itemCategory.toLowerCase().includes(searchKeyword))) return false;
+    return true;
+  });
+  rows.sort(function(a,b){
+    const dateA = String(a.Date || '') + ' ' + String(a.Time || '');
+    const dateB = String(b.Date || '') + ' ' + String(b.Time || '');
+    const amountA = getExpenseAmountValue(a), amountB = getExpenseAmountValue(b);
+    if (sortBy === 'oldest') return dateA.localeCompare(dateB);
+    if (sortBy === 'amount_desc') return amountB - amountA;
+    if (sortBy === 'amount_asc') return amountA - amountB;
+    if (sortBy === 'category') return String(a.Category || '').localeCompare(String(b.Category || ''));
+    if (sortBy === 'cashier') return String(a.Cashier_Name || '').localeCompare(String(b.Cashier_Name || ''));
+    return dateB.localeCompare(dateA);
+  });
+  return rows;
+}
+
+function renderPengeluaranTable() {
+  const tbody = document.getElementById('pengeluaranTableBody');
+  if (!tbody) return;
+  const expenses = getFilteredExpenses().map(normalizeExpenseItem);
+  updateExpenseFilterSummary(expenses);
+  if (expenses.length === 0) { tbody.innerHTML = '<tr><td colspan="7">Tidak ada pengeluaran sesuai filter.</td></tr>'; return; }
+  tbody.innerHTML = expenses.map(function(item){
+    const type = getExpenseTypeByCategory(item.Category);
+    const typeLabel = type === 'Personal' ? 'Pribadi Kasir' : 'Operasional';
+    return `<tr><td><strong>${escapeHtml(item.Date || '-')}</strong><br /><small>${escapeHtml(item.Time || '-')}</small></td><td>${escapeHtml(item.Cashier_Name || '-')}</td><td>${escapeHtml(typeLabel)}</td><td>${escapeHtml(item.Personal_Cashier || '-')}</td><td>${escapeHtml(item.Category || '-')}</td><td>${escapeHtml(item.Description || '-')}</td><td><strong>${formatRupiah(getExpenseAmountValue(item))}</strong></td></tr>`;
+  }).join('');
+}
+
+function updateExpenseFilterSummary(expenses) {
+  const rows = expenses || [];
+  const total = rows.reduce((sum,item)=>sum+getExpenseAmountValue(item),0);
+  const sharingTotal = rows.filter(item => getExpenseTypeByCategory(item.Category) === 'Sharing').reduce((sum,item)=>sum+getExpenseAmountValue(item),0);
+  const personalTotal = rows.filter(item => getExpenseTypeByCategory(item.Category) === 'Personal').reduce((sum,item)=>sum+getExpenseAmountValue(item),0);
+  setText('expenseFilteredTotal', formatRupiah(total));
+  setText('expenseFilteredCount', rows.length.toLocaleString('id-ID'));
+  setText('expenseSharingTotal', formatRupiah(sharingTotal));
+  setText('expensePersonalTotal', formatRupiah(personalTotal));
+}
+
+function resetExpenseFilters() {
+  state.expenseFiltersReady = false;
+  setInputValue('expenseFilterStartDate', '');
+  setInputValue('expenseFilterEndDate', '');
+  setInputValue('expenseFilterType', 'All');
+  setInputValue('expenseFilterCategory', 'All');
+  setInputValue('expenseFilterCashier', '');
+  setInputValue('expenseFilterSearch', '');
+  setInputValue('expenseSortBy', 'newest');
+  renderPengeluaranTable();
+}
+
+/* =====================================================
+   PROTECTED ACCESS
+===================================================== */
+
+function openProtectedModal(area) {
+  state.protectedTarget = area;
+
+  let title, desc;
+  if (area === 'dashboard') {
+    title = 'Buka Dashboard Penjualan';
+    desc = 'Masukkan passcode dashboard untuk melihat data penjualan.';
+  } else if (area === 'config') {
+    title = 'Buka Config';
+    desc = 'Masukkan passcode config untuk mengubah setting aplikasi.';
+  } else if (area === 'therapist') {
+    title = 'Buka Master Terapis';
+    desc = 'Masukkan passcode terapis untuk mengelola data terapis & input point.';
+  } else if (area === 'superadmin') {
+    title = 'Buka Konsolidasi Superadmin';
+    desc = 'Masukkan passcode superadmin untuk melihat settlement terapis.';
+  } else {
+    title = 'Buka Area Terkunci';
+    desc = 'Masukkan passcode.';
+  }
+
+  document.getElementById('protectedModalTitle').textContent = title;
+  document.getElementById('protectedModalDesc').textContent = desc;
+  document.getElementById('protectedError').textContent = '';
+  document.getElementById('protectedPasscodeInput').value = '';
+
+  document.getElementById('protectedModal').classList.remove('hidden');
+
+  setTimeout(function () {
+    document.getElementById('protectedPasscodeInput').focus();
+  }, 100);
+}
+
+function closeProtectedModal() {
+  document.getElementById('protectedModal').classList.add('hidden');
+  state.protectedTarget = '';
+}
+
+function handleProtectedEnter(event) {
+  if (event.key === 'Enter') {
+    validateProtectedAccess();
+  }
+}
+
+function validateProtectedAccess() {
+  const passcode = document.getElementById('protectedPasscodeInput').value.trim();
+  const errorEl = document.getElementById('protectedError');
+
+  errorEl.textContent = '';
+
+  if (!passcode) {
+    errorEl.textContent = 'Passcode wajib diisi.';
+    return;
+  }
+
+  setLoading(true, 'Validasi passcode...');
+
+  google.script.run
+    .withSuccessHandler(function (res) {
+      setLoading(false);
+
+      if (!res.success) {
+        errorEl.textContent = res.message || 'Passcode salah.';
+        return;
+      }
+
+      const area = state.protectedTarget;
+
+      if (area === 'dashboard') {
+        state.dashboardUnlocked = true;
+        sessionStorage.setItem('pos_dashboard_unlocked', 'true');
+        showDashboardContent();
+        loadDashboardData();
+      }
+
+      if (area === 'therapist') {
+        state.therapistUnlocked = true;
+        sessionStorage.setItem('pos_therapist_unlocked', 'true');
+        showTherapistContent();
+        loadTherapistData();
+      }
+
+      if (area === 'superadmin') {
+        state.superadminUnlocked = true;
+        sessionStorage.setItem('pos_superadmin_unlocked', 'true');
+        showKonsolidasiContent();
+        loadKonsolidasiData();
+      }
+
+      if (area === 'config') {
+        state.configUnlocked = true;
+        sessionStorage.setItem('pos_config_unlocked', 'true');
+        showConfigContent();
+        fillConfigForm();
+      }
+
+      closeProtectedModal();
+      showToast('Akses berhasil dibuka.');
+    })
+    .withFailureHandler(function (err) {
+      setLoading(false);
+      errorEl.textContent = getErrorMessage(err);
+    })
+    .validateProtectedTabPasscode({
+      area: state.protectedTarget,
+      passcode: passcode
+    });
+}
+
+/* =====================================================
+   DASHBOARD
+===================================================== */
+
+function showDashboardContent() {
+  document.getElementById('dashboardLocked').classList.add('hidden');
+  document.getElementById('dashboardContent').classList.remove('hidden');
+}
+
+function loadDashboardData() {
+  // Pastikan input tanggal sudah terisi (kalau pertama kali masuk, default = hari ini)
+  ensureDashboardFilterDefaults();
+
+  const filter = getDashboardFilterValue();
+
+  setLoading(true, 'Memuat dashboard...');
+
+  google.script.run
+    .withSuccessHandler(function (res) {
+      setLoading(false);
+
+      if (!res.success) {
+        showToast(res.message || 'Gagal memuat dashboard.', 'error');
+        return;
+      }
+
+      state.dashboardData = res.data;
+      renderDashboard();
+    })
+    .withFailureHandler(function (err) {
+      setLoading(false);
+      showToast(getErrorMessage(err), 'error');
+    })
+    .getDashboardData(filter);
+}
+
+/* ----- Date Range Filter helpers ----- */
+
+function getTodayLocalISO() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return y + '-' + m + '-' + day;
+}
+
+function ensureDashboardFilterDefaults() {
+  const startEl = document.getElementById('dashStartDate');
+  const endEl = document.getElementById('dashEndDate');
+  if (!startEl || !endEl) return;
+  const today = getTodayLocalISO();
+  if (!startEl.value) startEl.value = today;
+  if (!endEl.value) endEl.value = today;
+}
+
+function getDashboardFilterValue() {
+  const startEl = document.getElementById('dashStartDate');
+  const endEl = document.getElementById('dashEndDate');
+  if (!startEl || !endEl) return null;
+  return { startDate: startEl.value, endDate: endEl.value };
+}
+
+function applyDashboardFilter() {
+  const startEl = document.getElementById('dashStartDate');
+  const endEl = document.getElementById('dashEndDate');
+  if (!startEl || !endEl) return;
+  if (!startEl.value || !endEl.value) {
+    showToast('Mohon isi kedua tanggal terlebih dahulu.', 'error');
+    return;
+  }
+  if (startEl.value > endEl.value) {
+    // tukar otomatis agar user-friendly
+    const tmp = startEl.value;
+    startEl.value = endEl.value;
+    endEl.value = tmp;
+  }
+  loadDashboardData();
+}
+
+function resetDashboardFilter() {
+  const startEl = document.getElementById('dashStartDate');
+  const endEl = document.getElementById('dashEndDate');
+  if (!startEl || !endEl) return;
+  const today = getTodayLocalISO();
+  startEl.value = today;
+  endEl.value = today;
+  loadDashboardData();
+}
+
+function setDashboardPreset(preset) {
+  const startEl = document.getElementById('dashStartDate');
+  const endEl = document.getElementById('dashEndDate');
+  if (!startEl || !endEl) return;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  let start = new Date(today);
+  let end = new Date(today);
+
+  switch (preset) {
+    case 'today':
+      // start = end = today
+      break;
+    case 'yesterday':
+      start.setDate(start.getDate() - 1);
+      end.setDate(end.getDate() - 1);
+      break;
+    case 'last7':
+      start.setDate(start.getDate() - 6);
+      break;
+    case 'last30':
+      start.setDate(start.getDate() - 29);
+      break;
+    case 'thisMonth':
+      start = new Date(today.getFullYear(), today.getMonth(), 1);
+      end = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+      break;
+    case 'lastMonth':
+      start = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+      end = new Date(today.getFullYear(), today.getMonth(), 0);
+      break;
+    default:
+      return;
+  }
+
+  startEl.value = formatDateLocalISO(start);
+  endEl.value = formatDateLocalISO(end);
+  loadDashboardData();
+}
+
+function formatDateLocalISO(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return y + '-' + m + '-' + day;
+}
+
+function formatRangeLabel(startStr, endStr) {
+  if (!startStr || !endStr) return '';
+  if (startStr === endStr) {
+    return formatDateID(startStr);
+  }
+  return formatDateID(startStr) + ' s/d ' + formatDateID(endStr);
+}
+
+function formatDateID(isoStr) {
+  // 'yyyy-MM-dd' -> 'dd MMM yyyy'
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(isoStr || '');
+  if (!m) return isoStr || '';
+  const months = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'];
+  return Number(m[3]) + ' ' + months[Number(m[2]) - 1] + ' ' + m[1];
+}
+
+function renderDashboard() {
+  const data = state.dashboardData || {};
+  const cards = data.cards || {};
+  const range = data.range || { startDate: '', endDate: '', days: 1 };
+  const days = Math.max(1, Number(range.days || 1));
+  const rangeLabel = formatRangeLabel(range.startDate, range.endDate);
+  const isSingleDay = range.startDate === range.endDate;
+
+  // Update label-label kontekstual berdasarkan range
+  setText('dateFilterNote', 'Menampilkan data: ' + (rangeLabel || '-') + ' (' + days + ' hari)');
+  setText('cardRevenueSubtitle', 'Total transaksi paid' + (isSingleDay ? '' : ' (' + days + ' hari)'));
+  setText('cardTransactionsSubtitle', 'Jumlah checkout' + (isSingleDay ? ' pada hari ini' : ' pada range'));
+  setText('sideReportEyebrow', isSingleDay ? 'Today' : 'Range');
+  setText('rangeReportEyebrow', isSingleDay ? 'Daily Sales' : 'Range Sales');
+  setText('rangeReportTitle', isSingleDay ? 'Rekap Penjualan' : 'Rekap Penjualan per Tanggal');
+  setText('rangeReportNote', 'Range: ' + (rangeLabel || '-') + ' (' + days + ' hari)');
+
+  setText('cardRevenueToday', formatRupiah(cards.revenueToday || 0));
+  setText('cardGrossProfitToday', formatRupiah(cards.grossProfitToday || 0));
+  setText('cardExpensesToday', formatRupiah(cards.expensesToday || 0));
+  setText('cardNetProfitToday', formatRupiah(cards.netProfitToday || 0));
+  setText('cardTransactions', Number(cards.transactionsToday || 0).toLocaleString('id-ID'));
+
+  // Rata-rata omzet per hari
+  const avgPerDay = (Number(cards.revenueToday || 0)) / days;
+  setText('cardAvgPerDay', formatRupiah(avgPerDay));
+  setText('cardAvgPerDaySubtitle', 'Omzet / ' + days + ' hari');
+
+  setText('cardExpenseBreakdown', 'Operasional ' + formatRupiah(cards.sharingExpensesToday || 0) + ' / Pribadi ' + formatRupiah(cards.personalExpensesToday || 0));
+  const topCashier = cards.topCashierToday || {};
+  setText('cardTopCashier', topCashier.cashierName || '-');
+  setText('cardTopCashierRevenue', formatRupiah(topCashier.revenue || 0) + ' / ' + Number(topCashier.transactions || 0) + ' trx');
+  renderRevenueChart(data.last7Revenue || []);
+  renderPaymentSummary(data.paymentSummary || {});
+  renderTopCashiers(data.topCashiers || []);
+  renderSharingExpenses(data.sharingExpenses || []);
+  renderPersonalExpenses(data.personalExpenses || []);
+  renderMonthlySales(data.monthlySales || [], data.monthlySummary || {});
+}
+
+function renderRevenueChart(items) {
+  const wrapper = document.getElementById('revenueChart');
+
+  if (!items || items.length === 0) {
+    wrapper.innerHTML = '<div class="empty-cart">Belum ada data chart.</div>';
+    return;
+  }
+
+  const maxRevenue = Math.max.apply(
+    null,
+    items.map(function (item) {
+      return Number(item.netProfit || item.revenue || 0);
+    })
+  );
+
+  wrapper.innerHTML = items
+    .map(function (item) {
+      const revenue = Number(item.netProfit || item.revenue || 0);
+      const height = maxRevenue > 0 ? Math.max(8, Math.round((revenue / maxRevenue) * 180)) : 8;
+
+      return `
+        <div class="bar-item">
+          <div class="bar-value">${compactRupiah(revenue)}</div>
+          <div class="bar" style="height:${height}px;"></div>
+          <div class="bar-label">${escapeHtml(item.label || '-')}</div>
+        </div>
+      `;
+    })
+    .join('');
+}
+
+function renderPaymentSummary(summary) {
+  const wrapper = document.getElementById('paymentSummaryList');
+
+  const methods = ['Cash', 'QRIS', 'Transfer'];
+
+  wrapper.innerHTML = methods
+    .map(function (method) {
+      return `
+        <div class="report-row">
+          <span>${method}</span>
+          <strong>${formatRupiah(summary[method] || 0)}</strong>
+        </div>
+      `;
+    })
+    .join('');
+}
+
+function renderTopProducts(items) {
+  const wrapper = document.getElementById('topProductsList');
+
+  if (!items || items.length === 0) {
+    wrapper.innerHTML = '<div class="report-row"><span>Belum ada data</span><strong>-</strong></div>';
+    return;
+  }
+
+  wrapper.innerHTML = items
+    .map(function (item, index) {
+      return `
+        <div class="report-row">
+          <span>${index + 1}. ${escapeHtml(item.menuName)}</span>
+          <strong>${item.qty} item</strong>
+        </div>
+      `;
+    })
+    .join('');
+}
+
+function renderTopCashiers(items) {
+  const wrapper = document.getElementById('topCashiersList');
+  if (!wrapper) return;
+  if (!items || items.length === 0) { wrapper.innerHTML = '<div class="report-row"><span>Belum ada data</span><strong>-</strong></div>'; return; }
+  wrapper.innerHTML = items.map((item,index)=>`<div class="report-row"><span>${index+1}. ${escapeHtml(item.cashierName)}</span><strong>${formatRupiah(item.revenue)}<small>${item.transactions} trx</small></strong></div>`).join('');
+}
+function renderSharingExpenses(items) {
+  const wrapper = document.getElementById('sharingExpensesList');
+  if (!wrapper) return;
+  if (!items || items.length === 0) { wrapper.innerHTML = '<div class="report-row"><span>Belum ada data</span><strong>-</strong></div>'; return; }
+  wrapper.innerHTML = items.map(item=>`<div class="report-row"><span>${escapeHtml(item.category)}</span><strong>${formatRupiah(item.amount)}<small>${item.count} input</small></strong></div>`).join('');
+}
+function renderPersonalExpenses(items) {
+  const wrapper = document.getElementById('personalExpensesList');
+  if (!wrapper) return;
+  if (!items || items.length === 0) { wrapper.innerHTML = '<div class="report-row"><span>Belum ada kasbon/fee</span><strong>-</strong></div>'; return; }
+  wrapper.innerHTML = items.map(item=>`<div class="report-row"><span>${escapeHtml(item.cashierName)} - ${escapeHtml(item.category)}</span><strong>${formatRupiah(item.amount)}<small>${item.count} input</small></strong></div>`).join('');
+}
+
+
+function renderMonthlySales(items, summary) {
+  const tbody = document.getElementById('monthlySalesTableBody');
+  const data = items || [];
+  const monthSummary = summary || {};
+
+  setText('monthlySummaryRevenue', formatRupiah(monthSummary.revenue || 0));
+  setText('monthlySummaryTransactions', Number(monthSummary.transactions || 0).toLocaleString('id-ID'));
+  setText('monthlySummaryGrossProfit', formatRupiah(monthSummary.grossProfit || 0));
+  setText('monthlySummaryExpenses', formatRupiah(monthSummary.expenses || 0));
+  setText('monthlySummaryNetProfit', formatRupiah(monthSummary.netProfit || 0));
+
+  if (!tbody) return;
+
+  if (data.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6">Belum ada data penjualan pada range tanggal ini.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = data
+    .map(function (row) {
+      const isToday = row.date === (state.dashboardData && state.dashboardData.today);
+      return `
+        <tr class="${isToday ? 'today-row' : ''}">
+          <td><strong>${escapeHtml(row.date || '-')}</strong></td>
+          <td>${Number(row.transactions || 0).toLocaleString('id-ID')}</td>
+          <td>${formatRupiah(row.revenue || 0)}</td>
+          <td>${formatRupiah(row.grossProfit || 0)}</td>
+          <td>${formatRupiah(row.expenses || 0)}</td>
+          <td><strong>${formatRupiah(row.netProfit || 0)}</strong></td>
+        </tr>
+      `;
+    })
+    .join('');
+}
+
+/* =====================================================
+   THERAPIST MANAGEMENT
+===================================================== */
+
+function showTherapistContent() {
+  document.getElementById('therapisLocked').classList.add('hidden');
+  document.getElementById('therapisContent').classList.remove('hidden');
+}
+
+function loadTherapistData() {
+  setLoading(true, 'Memuat data terapis...');
+  google.script.run
+    .withSuccessHandler(function (res) {
+      setLoading(false);
+      if (!res.success) {
+        showToast(res.message || 'Gagal memuat data terapis.', 'error');
+        return;
+      }
+      state.therapists = res.data.therapists || [];
+      renderTherapistMasterTable();
+      populateTherapistDropdown();
+      loadTherapistPoints();
+    })
+    .withFailureHandler(function (err) {
+      setLoading(false);
+      showToast(getErrorMessage(err), 'error');
+    })
+    .getTherapists({});
+}
+
+function loadTherapistPoints() {
+  google.script.run
+    .withSuccessHandler(function (res) {
+      if (!res.success) return;
+      state.therapistPoints = res.data.rows || [];
+      renderTherapistPointTable();
+    })
+    .withFailureHandler(function (err) {
+      console.error('Load points failed:', getErrorMessage(err));
+    })
+    .getTherapistPoints({ startDate: getOneDayAgo(), endDate: getTodayLocalISO() });
+}
+
+function getOneDayAgo() {
+  const d = new Date();
+  d.setDate(d.getDate() - 30);
+  return formatDateLocalISO(d);
+}
+
+function populateTherapistDropdown() {
+  const sel = document.getElementById('pointFormTherapistId');
+  if (!sel) return;
+  const active = state.therapists.filter(t => t.active);
+  sel.innerHTML = '<option value="">-- Pilih Terapis --</option>' +
+    active.map(t => '<option value="' + escapeHtml(t.therapistId) + '">' + escapeHtml(t.therapistName) + '</option>').join('');
+}
+
+function renderTherapistMasterTable() {
+  const tbody = document.getElementById('therapistMasterTableBody');
+  if (!tbody) return;
+  const data = state.therapists || [];
+  if (data.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7">Belum ada data terapis.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = data.map(t => {
+    const statusClass = t.active ? 'status-active' : 'status-inactive';
+    const statusText = t.active ? 'Aktif' : 'Non-aktif';
+    const actionBtn = t.active
+      ? '<button class="small-btn" onclick="deactivateTherapist(\'' + escapeHtml(t.therapistId) + '\')">Nonaktifkan</button>'
+      : '<button class="small-btn" onclick="reactivateTherapist(\'' + escapeHtml(t.therapistId) + '\')">Aktifkan</button>';
+    return `
+      <tr>
+        <td><strong>${escapeHtml(t.therapistId)}</strong></td>
+        <td>${escapeHtml(t.therapistName)}</td>
+        <td>${escapeHtml(t.phone)}</td>
+        <td>${formatRupiah(t.defaultPointValue)}</td>
+        <td><span class="${statusClass}">${statusText}</span></td>
+        <td>${escapeHtml(t.notes)}</td>
+        <td>
+          <button class="small-btn" onclick="editTherapist('${escapeHtml(t.therapistId)}')">Edit</button>
+          ${actionBtn}
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function saveTherapistForm() {
+  const id = document.getElementById('therapistFormId').value.trim();
+  const name = document.getElementById('therapistFormName').value.trim();
+  const phone = document.getElementById('therapistFormPhone').value.trim();
+  const pointValueRaw = document.getElementById('therapistFormPointValue').value.trim();
+  const active = document.getElementById('therapistFormActive').value === 'true';
+  const notes = document.getElementById('therapistFormNotes').value.trim();
+
+  if (!name) {
+    showToast('Nama terapis wajib diisi.', 'error');
+    return;
+  }
+
+  const pointValue = parseRupiahInput(pointValueRaw);
+
+  const payload = {
+    therapistId: id,
+    therapistName: name,
+    phone: phone,
+    defaultPointValue: pointValue,
+    active: active,
+    notes: notes
+  };
+
+  setLoading(true, id ? 'Memperbarui terapis...' : 'Menambahkan terapis...');
+
+  google.script.run
+    .withSuccessHandler(function (res) {
+      setLoading(false);
+      if (!res.success) {
+        showToast(res.message || 'Gagal menyimpan terapis.', 'error');
+        return;
+      }
+      showToast(res.message || 'Terapis berhasil disimpan.');
+      cancelTherapistForm();
+      loadTherapistData();
+    })
+    .withFailureHandler(function (err) {
+      setLoading(false);
+      showToast(getErrorMessage(err), 'error');
+    })
+    .saveTherapist(payload);
+}
+
+function cancelTherapistForm() {
+  state.therapistFormMode = 'add';
+  document.getElementById('therapistFormId').value = '';
+  document.getElementById('therapistFormName').value = '';
+  document.getElementById('therapistFormPhone').value = '';
+  document.getElementById('therapistFormPointValue').value = '';
+  document.getElementById('therapistFormActive').value = 'true';
+  document.getElementById('therapistFormNotes').value = '';
+  document.getElementById('therapistFormTitle').textContent = 'Tambah Terapis Baru';
+  document.getElementById('therapistFormCancelBtn').style.display = 'none';
+}
+
+function editTherapist(therapistId) {
+  const t = state.therapists.find(x => x.therapistId === therapistId);
+  if (!t) return;
+  state.therapistFormMode = 'edit';
+  document.getElementById('therapistFormId').value = t.therapistId;
+  document.getElementById('therapistFormName').value = t.therapistName;
+  document.getElementById('therapistFormPhone').value = t.phone;
+  document.getElementById('therapistFormPointValue').value = formatRupiah(t.defaultPointValue);
+  document.getElementById('therapistFormActive').value = t.active ? 'true' : 'false';
+  document.getElementById('therapistFormNotes').value = t.notes;
+  document.getElementById('therapistFormTitle').textContent = 'Edit Terapis';
+  document.getElementById('therapistFormCancelBtn').style.display = 'inline-block';
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function deactivateTherapist(therapistId) {
+  if (!confirm('Nonaktifkan terapis ini?')) return;
+  setLoading(true, 'Menonaktifkan...');
+  google.script.run
+    .withSuccessHandler(function (res) {
+      setLoading(false);
+      if (!res.success) {
+        showToast(res.message || 'Gagal menonaktifkan terapis.', 'error');
+        return;
+      }
+      showToast(res.message);
+      loadTherapistData();
+    })
+    .withFailureHandler(function (err) {
+      setLoading(false);
+      showToast(getErrorMessage(err), 'error');
+    })
+    .deactivateTherapist({ therapistId: therapistId });
+}
+
+function reactivateTherapist(therapistId) {
+  if (!confirm('Aktifkan kembali terapis ini?')) return;
+  setLoading(true, 'Mengaktifkan...');
+  google.script.run
+    .withSuccessHandler(function (res) {
+      setLoading(false);
+      if (!res.success) {
+        showToast(res.message || 'Gagal mengaktifkan terapis.', 'error');
+        return;
+      }
+      showToast(res.message);
+      loadTherapistData();
+    })
+    .withFailureHandler(function (err) {
+      setLoading(false);
+      showToast(getErrorMessage(err), 'error');
+    })
+    .reactivateTherapist({ therapistId: therapistId });
+}
+
+function renderTherapistPointTable() {
+  const tbody = document.getElementById('therapistPointTableBody');
+  if (!tbody) return;
+  const filter = document.getElementById('pointFilterTherapist').value.trim().toLowerCase();
+  const data = (state.therapistPoints || []).filter(p => {
+    if (!filter) return true;
+    return (p.therapistName || '').toLowerCase().indexOf(filter) !== -1;
+  });
+  if (data.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="8">Belum ada data point.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = data.map(p => `
+    <tr>
+      <td>${escapeHtml(p.date)} ${escapeHtml(p.time)}</td>
+      <td><strong>${escapeHtml(p.therapistName)}</strong></td>
+      <td>${escapeHtml(p.serviceName)}</td>
+      <td>${p.qty}</td>
+      <td>${formatRupiah(p.pointPerUnit)}</td>
+      <td><strong>${formatRupiah(p.totalPoint)}</strong></td>
+      <td>${formatRupiah(p.amount)}</td>
+      <td><small>${escapeHtml(p.notes)}</small></td>
+    </tr>
+  `).join('');
+}
+
+function saveTherapistPoint() {
+  const therapistId = document.getElementById('pointFormTherapistId').value.trim();
+  const serviceName = document.getElementById('pointFormServiceName').value.trim() || 'Layanan';
+  const qty = parseInt(document.getElementById('pointFormQty').value) || 1;
+  const pointValueRaw = document.getElementById('pointFormPointValue').value.trim();
+  const amountRaw = document.getElementById('pointFormAmount').value.trim();
+  const notes = document.getElementById('pointFormNotes').value.trim();
+
+  if (!therapistId) {
+    showToast('Pilih terapis terlebih dahulu.', 'error');
+    return;
+  }
+  if (!pointValueRaw) {
+    showToast('Point per unit wajib diisi.', 'error');
+    return;
+  }
+
+  const pointPerUnit = parseRupiahInput(pointValueRaw);
+  const amount = amountRaw ? parseRupiahInput(amountRaw) : 0;
+
+  const payload = {
+    cashierName: state.cashierName,
+    therapistId: therapistId,
+    serviceName: serviceName,
+    qty: qty,
+    pointPerUnit: pointPerUnit,
+    amount: amount,
+    notes: notes
+  };
+
+  setLoading(true, 'Menyimpan point...');
+
+  google.script.run
+    .withSuccessHandler(function (res) {
+      setLoading(false);
+      if (!res.success) {
+        showToast(res.message || 'Gagal menyimpan point.', 'error');
+        return;
+      }
+      showToast(res.message || 'Point berhasil disimpan.');
+      document.getElementById('pointFormServiceName').value = '';
+      document.getElementById('pointFormQty').value = '1';
+      document.getElementById('pointFormPointValue').value = '';
+      document.getElementById('pointFormAmount').value = '';
+      document.getElementById('pointFormNotes').value = '';
+      loadTherapistPoints();
+    })
+    .withFailureHandler(function (err) {
+      setLoading(false);
+      showToast(getErrorMessage(err), 'error');
+    })
+    .saveTherapistPoint(payload);
+}
+
+/* =====================================================
+   KONSOLIDASI SUPERADMIN
+===================================================== */
+
+function showKonsolidasiContent() {
+  document.getElementById('konsolidasiLocked').classList.add('hidden');
+  document.getElementById('konsolidasiContent').classList.remove('hidden');
+}
+
+function loadKonsolidasiData() {
+  ensureKonsolidasiFilterDefaults();
+  const filter = getKonsolidasiFilterValue();
+  setLoading(true, 'Memuat konsolidasi...');
+  google.script.run
+    .withSuccessHandler(function (res) {
+      setLoading(false);
+      if (!res.success) {
+        showToast(res.message || 'Gagal memuat konsolidasi.', 'error');
+        return;
+      }
+      state.konsolidasiData = res.data;
+      renderKonsolidasi();
+    })
+    .withFailureHandler(function (err) {
+      setLoading(false);
+      showToast(getErrorMessage(err), 'error');
+    })
+    .getTherapistConsolidation(filter);
+}
+
+function ensureKonsolidasiFilterDefaults() {
+  const startEl = document.getElementById('konsolidasiStartDate');
+  const endEl = document.getElementById('konsolidasiEndDate');
+  const shareEl = document.getElementById('konsolidasiSharePercent');
+  if (!startEl || !endEl) return;
+  const today = getTodayLocalISO();
+  if (!startEl.value) startEl.value = today;
+  if (!endEl.value) endEl.value = today;
+  if (!shareEl.value) shareEl.value = state.config.therapistSharePercent || 50;
+}
+
+function getKonsolidasiFilterValue() {
+  const startEl = document.getElementById('konsolidasiStartDate');
+  const endEl = document.getElementById('konsolidasiEndDate');
+  const shareEl = document.getElementById('konsolidasiSharePercent');
+  return {
+    startDate: startEl ? startEl.value : '',
+    endDate: endEl ? endEl.value : '',
+    sharePercent: shareEl ? parseFloat(shareEl.value) : 50
+  };
+}
+
+function applyKonsolidasiFilter() {
+  const startEl = document.getElementById('konsolidasiStartDate');
+  const endEl = document.getElementById('konsolidasiEndDate');
+  if (!startEl || !endEl) return;
+  if (!startEl.value || !endEl.value) {
+    showToast('Mohon isi kedua tanggal terlebih dahulu.', 'error');
+    return;
+  }
+  if (startEl.value > endEl.value) {
+    const tmp = startEl.value;
+    startEl.value = endEl.value;
+    endEl.value = tmp;
+  }
+  loadKonsolidasiData();
+}
+
+function resetKonsolidasiFilter() {
+  const startEl = document.getElementById('konsolidasiStartDate');
+  const endEl = document.getElementById('konsolidasiEndDate');
+  const shareEl = document.getElementById('konsolidasiSharePercent');
+  if (!startEl || !endEl) return;
+  const today = getTodayLocalISO();
+  startEl.value = today;
+  endEl.value = today;
+  if (shareEl) shareEl.value = state.config.therapistSharePercent || 50;
+  loadKonsolidasiData();
+}
+
+function setKonsolidasiPreset(preset) {
+  const startEl = document.getElementById('konsolidasiStartDate');
+  const endEl = document.getElementById('konsolidasiEndDate');
+  if (!startEl || !endEl) return;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  let start = new Date(today);
+  let end = new Date(today);
+  switch (preset) {
+    case 'today':
+      break;
+    case 'last7':
+      start.setDate(start.getDate() - 6);
+      break;
+    case 'last30':
+      start.setDate(start.getDate() - 29);
+      break;
+    case 'thisMonth':
+      start = new Date(today.getFullYear(), today.getMonth(), 1);
+      end = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+      break;
+    default:
+      return;
+  }
+  startEl.value = formatDateLocalISO(start);
+  endEl.value = formatDateLocalISO(end);
+  loadKonsolidasiData();
+}
+
+function renderKonsolidasi() {
+  const data = state.konsolidasiData || {};
+  const range = data.range || {};
+  const summary = data.summary || {};
+  const therapists = data.therapists || [];
+  const sharePct = data.sharePercent || 50;
+
+  const rangeLabel = formatRangeLabel(range.startDate, range.endDate);
+  setText('konsolidasiDateNote', 'Range: ' + rangeLabel);
+  setText('konsolGross', formatRupiah(summary.totalGross || 0));
+  setText('konsolShare', formatRupiah(summary.totalShare || 0));
+  setText('konsolSharePct', sharePct + '% dari gross');
+  setText('konsolKasbon', formatRupiah(summary.totalKasbon || 0));
+  setText('konsolNet', formatRupiah(summary.totalNet || 0));
+  setText('konsolTherapistCount', summary.therapistCount || 0);
+  setText('konsolEntries', summary.totalEntries || 0);
+  setText('konsolTableSharePct', sharePct + '%');
+
+  renderKonsolidasiTable(therapists);
+  renderKonsolidasiChart(data.daily || []);
+}
+
+function renderKonsolidasiTable(therapists) {
+  const tbody = document.getElementById('konsolidasiTableBody');
+  if (!tbody) return;
+  if (!therapists || therapists.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="8">Belum ada data settlement.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = therapists.map(t => {
+    const netClass = t.netPayout >= 0 ? '' : ' style="color:red;"';
+    return `
+      <tr>
+        <td><strong>${escapeHtml(t.therapistName)}</strong></td>
+        <td>${formatRupiah(t.totalPoint)}</td>
+        <td>${formatRupiah(t.gross)}</td>
+        <td>${formatRupiah(t.share)}</td>
+        <td>${formatRupiah(t.kasbon)}</td>
+        <td${netClass}><strong>${formatRupiah(t.netPayout)}</strong></td>
+        <td>${t.entriesCount}</td>
+        <td>${t.kasbonCount}</td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function renderKonsolidasiChart(daily) {
+  const wrapper = document.getElementById('konsolidasiChart');
+  if (!wrapper) return;
+  if (!daily || daily.length === 0) {
+    wrapper.innerHTML = '<div class="empty-cart">Belum ada data harian.</div>';
+    return;
+  }
+  const maxVal = Math.max.apply(null, daily.map(d => Math.abs(d.net)));
+  wrapper.innerHTML = daily.map(d => {
+    const net = d.net || 0;
+    const height = maxVal > 0 ? Math.max(8, Math.round((Math.abs(net) / maxVal) * 120)) : 8;
+    const color = net >= 0 ? 'var(--accent)' : '#ef4444';
+    return `
+      <div class="bar-item">
+        <div class="bar-value">${compactRupiah(net)}</div>
+        <div class="bar-col" style="height:${height}px; background:${color};"></div>
+        <div class="bar-label">${escapeHtml(d.date.slice(8))}</div>
+      </div>
+    `;
+  }).join('');
+}
+
+/* =====================================================
+   CONFIG
+/* =====================================================
+   CONFIG
+===================================================== */
+
+function showConfigContent() {
+  document.getElementById('configLocked').classList.add('hidden');
+  document.getElementById('configContent').classList.remove('hidden');
+}
+
+function fillConfigForm() {
+  setInputValue('configStoreName', state.config.storeName || '');
+  setInputValue('configStoreAddress', state.config.storeAddress || '');
+  setInputValue('configStorePhone', state.config.storePhone || '');
+  setInputValue('configTaxRate', state.config.taxRate || 0);
+  setInputValue('configServiceRate', state.config.serviceRate || 0);
+  setInputValue('configLowStockLimit', state.config.lowStockLimit || 10);
+  setInputValue('configTherapistSharePercent', state.config.therapistSharePercent || 50);
+  setInputValue('configReceiptFooter', state.config.receiptFooter || '');
+
+  setInputValue('configCashierPasscode', '');
+  setInputValue('configDashboardPasscode', '');
+  setInputValue('configNewConfigPasscode', '');
+  setInputValue('configTherapistPasscode', '');
+  setInputValue('configSuperadminPasscode', '');
+  setInputValue('configCurrentPasscode', '');
+}
+
+function saveConfig() {
+  const currentPasscode = getInputValue('configCurrentPasscode');
+
+  if (!currentPasscode) {
+    showToast('Passcode config saat ini wajib diisi.', 'error');
+    return;
+  }
+
+  const payload = {
+    configPasscode: currentPasscode,
+    storeName: getInputValue('configStoreName'),
+    storeAddress: getInputValue('configStoreAddress'),
+    storePhone: getInputValue('configStorePhone'),
+    taxRate: getInputValue('configTaxRate'),
+    serviceRate: getInputValue('configServiceRate'),
+    lowStockLimit: getInputValue('configLowStockLimit'),
+    therapistSharePercent: getInputValue('configTherapistSharePercent'),
+    receiptFooter: getInputValue('configReceiptFooter'),
+    cashierPasscode: getInputValue('configCashierPasscode'),
+    dashboardPasscode: getInputValue('configDashboardPasscode'),
+    newConfigPasscode: getInputValue('configNewConfigPasscode'),
+    therapistPasscode: getInputValue('configTherapistPasscode'),
+    superadminPasscode: getInputValue('configSuperadminPasscode')
+  };
+
+  setLoading(true, 'Menyimpan config...');
+
+  google.script.run
+    .withSuccessHandler(function (res) {
+      setLoading(false);
+
+      if (!res.success) {
+        showToast(res.message || 'Gagal menyimpan config.', 'error');
+        return;
+      }
+
+      state.config = res.data || state.config;
+
+      syncBrand();
+      fillConfigForm();
+      updateSummary();
+      renderMenus();
+      renderStockTable();
+
+      showToast('Config berhasil disimpan.');
+    })
+    .withFailureHandler(function (err) {
+      setLoading(false);
+      showToast(getErrorMessage(err), 'error');
+    })
+    .updateConfig(payload);
+}
+
+/* =====================================================
+   EXTRA HELPERS
+===================================================== */
+
+function setInputValue(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.value = value;
+}
+
+function getInputValue(id) {
+  const el = document.getElementById(id);
+  return el ? el.value.trim() : '';
+}
+
+function handleRupiahInput(input) {
+  let val = input.value.replace(/[^0-9]/g, '');
+  if (val) {
+    input.value = formatRupiah(parseInt(val));
+  } else {
+    input.value = '';
+  }
+}
+
+function parseRupiahInput(str) {
+  if (!str) return 0;
+  const cleaned = str.replace(/[^0-9]/g, '');
+  return parseInt(cleaned) || 0;
+}
+
+function compactRupiah(value) {
+  const number = Number(value || 0);
+
+  if (number >= 1000000) {
+    return 'Rp ' + (number / 1000000).toFixed(1).replace('.0', '') + 'jt';
+  }
+
+  if (number >= 1000) {
+    return 'Rp ' + Math.round(number / 1000) + 'rb';
+  }
+
+  return formatRupiah(number);
+}
+
+/* =====================================================
+   RECEIPT PREVIEW + PRINT
+===================================================== */
+
+function renderReceiptPreviews() {
+  const receipt = state.lastReceipt;
+
+  if (!receipt) {
+    document.getElementById('paymentReceiptPreview').innerHTML = '<p>Receipt tidak ditemukan.</p>';
+    document.getElementById('kitchenReceiptPreview').innerHTML = '<p>Kitchen order tidak ditemukan.</p>';
+    return;
+  }
+
+  document.getElementById('paymentReceiptPreview').innerHTML = buildPaymentReceiptHtml(receipt);
+  document.getElementById('kitchenReceiptPreview').innerHTML = buildKitchenReceiptHtml(receipt);
+}
+
+function switchReceiptTab(type) {
+  const paymentPreview = document.getElementById('paymentReceiptPreview');
+  const kitchenPreview = document.getElementById('kitchenReceiptPreview');
+  const paymentBtn = document.getElementById('paymentReceiptTabBtn');
+  const kitchenBtn = document.getElementById('kitchenReceiptTabBtn');
+
+  paymentPreview.classList.remove('active');
+  kitchenPreview.classList.remove('active');
+  paymentBtn.classList.remove('active');
+  kitchenBtn.classList.remove('active');
+
+  if (type === 'kitchen') {
+    kitchenPreview.classList.add('active');
+    kitchenBtn.classList.add('active');
+    return;
+  }
+
+  paymentPreview.classList.add('active');
+  paymentBtn.classList.add('active');
+}
+
+function getActiveReceiptType() {
+  const kitchenActive = document.getElementById('kitchenReceiptPreview').classList.contains('active');
+  return kitchenActive ? 'kitchen' : 'payment';
+}
+
+function printActiveReceipt() {
+  const type = getActiveReceiptType();
+  const receipt = state.lastReceipt;
+
+  if (!receipt) {
+    showToast('Receipt tidak ditemukan.', 'error');
+    return;
+  }
+
+  const html = type === 'kitchen'
+    ? buildKitchenReceiptHtml(receipt)
+    : buildPaymentReceiptHtml(receipt);
+
+  const printArea = document.getElementById('printArea');
+  printArea.innerHTML = `<div class="thermal-receipt active">${html}</div>`;
+
+  setTimeout(function () {
+    window.print();
+  }, 150);
+}
+
+function copyActiveReceiptText() {
+  const type = getActiveReceiptType();
+  const receipt = state.lastReceipt;
+
+  if (!receipt) {
+    showToast('Receipt tidak ditemukan.', 'error');
+    return;
+  }
+
+  const text = type === 'kitchen'
+    ? buildKitchenReceiptText(receipt)
+    : buildPaymentReceiptText(receipt);
+
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text)
+      .then(function () {
+        showToast('Text struk berhasil dicopy.');
+      })
+      .catch(function () {
+        fallbackCopyText(text);
+      });
+
+    return;
+  }
+
+  fallbackCopyText(text);
+}
+
+function fallbackCopyText(text) {
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+
+  try {
+    document.execCommand('copy');
+    showToast('Text struk berhasil dicopy.');
+  } catch (error) {
+    showToast('Gagal copy text struk.', 'error');
+  }
+
+  document.body.removeChild(textarea);
+}
+
+/* =====================================================
+   RECEIPT HTML
+===================================================== */
+
+function buildPaymentReceiptHtml(receipt) {
+  const store = receipt.store || {};
+  const trx = receipt.transaction || {};
+  const items = receipt.items || [];
+  const totals = receipt.totals || {};
+
+  const itemHtml = items.map(function (item) {
+    return `
+      <div class="receipt-item">
+        <div>${escapeHtml(item.menuName)}</div>
+        <div class="receipt-row">
+          <span>${Number(item.qty || 0)} x ${formatRupiah(item.price)}</span>
+          <strong>${formatRupiah(item.amount)}</strong>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  return `
+    <div class="receipt-center receipt-bold">${escapeHtml(store.name || 'Kedai Kopi')}</div>
+    ${store.address ? `<div class="receipt-center">${escapeHtml(store.address)}</div>` : ''}
+    ${store.phone ? `<div class="receipt-center">${escapeHtml(store.phone)}</div>` : ''}
+
+    <div class="receipt-line"></div>
+
+    <div>No: ${escapeHtml(trx.transactionId || '-')}</div>
+    <div>Tgl: ${escapeHtml(trx.date || '-')} ${escapeHtml(trx.time || '')}</div>
+    <div>Kasir: ${escapeHtml(trx.cashierName || '-')}</div>
+    <div>Bayar: ${escapeHtml(trx.paymentMethod || '-')}</div>
+
+    <div class="receipt-line"></div>
+
+    ${itemHtml}
+
+    <div class="receipt-line"></div>
+
+    <div class="receipt-row">
+      <span>Subtotal</span>
+      <strong>${formatRupiah(totals.subtotal)}</strong>
+    </div>
+
+    <div class="receipt-row">
+      <span>Tax ${Number(totals.taxRate || 0)}%</span>
+      <strong>${formatRupiah(totals.taxAmount)}</strong>
+    </div>
+
+    <div class="receipt-row">
+      <span>Service ${Number(totals.serviceRate || 0)}%</span>
+      <strong>${formatRupiah(totals.serviceAmount)}</strong>
+    </div>
+
+    <div class="receipt-row receipt-bold">
+      <span>Total</span>
+      <strong>${formatRupiah(totals.roundedTotal)}</strong>
+    </div>
+
+    <div class="receipt-row">
+      <span>Bayar</span>
+      <strong>${formatRupiah(totals.paidAmount)}</strong>
+    </div>
+
+    <div class="receipt-row">
+      <span>Kembali</span>
+      <strong>${formatRupiah(totals.changeAmount)}</strong>
+    </div>
+
+    <div class="receipt-line"></div>
+
+    <div class="receipt-center">${escapeHtml(store.footer || 'Terima kasih.')}</div>
+  `;
+}
+
+function buildKitchenReceiptHtml(receipt) {
+  const trx = receipt.transaction || {};
+  const items = receipt.items || [];
+
+  const itemHtml = items.map(function (item) {
+    return `
+      <div class="receipt-row receipt-bold">
+        <span>${Number(item.qty || 0)}x</span>
+        <strong>${escapeHtml(item.menuName)}</strong>
+      </div>
+    `;
+  }).join('');
+
+  return `
+    <div class="receipt-center receipt-bold">KITCHEN ORDER</div>
+
+    <div class="receipt-line"></div>
+
+    <div>No: ${escapeHtml(trx.transactionId || '-')}</div>
+    <div>Jam: ${escapeHtml(trx.time || '-')}</div>
+    <div>Kasir: ${escapeHtml(trx.cashierName || '-')}</div>
+
+    <div class="receipt-line"></div>
+
+    ${itemHtml}
+
+    <div class="receipt-line"></div>
+  `;
+}
+
+/* =====================================================
+   RECEIPT TEXT
+   Ini yang nanti bisa dikirim ke RAWBT / Android bridge.
+===================================================== */
+
+function buildPaymentReceiptText(receipt) {
+  const store = receipt.store || {};
+  const trx = receipt.transaction || {};
+  const items = receipt.items || [];
+  const totals = receipt.totals || {};
+
+  const lines = [];
+
+  lines.push(centerText(store.name || 'Kedai Kopi', 32));
+
+  if (store.address) {
+    lines.push(centerText(store.address, 32));
+  }
+
+  if (store.phone) {
+    lines.push(centerText(store.phone, 32));
+  }
+
+  lines.push('--------------------------------');
+  lines.push('No: ' + (trx.transactionId || '-'));
+  lines.push('Tgl: ' + (trx.date || '-') + ' ' + (trx.time || ''));
+  lines.push('Kasir: ' + (trx.cashierName || '-'));
+  lines.push('Bayar: ' + (trx.paymentMethod || '-'));
+  lines.push('--------------------------------');
+
+  items.forEach(function (item) {
+    lines.push(String(item.menuName || ''));
+    lines.push(leftRightText(
+      Number(item.qty || 0) + ' x ' + formatRupiah(item.price),
+      formatRupiah(item.amount),
+      32
+    ));
+  });
+
+  lines.push('--------------------------------');
+  lines.push(leftRightText('Subtotal', formatRupiah(totals.subtotal), 32));
+  lines.push(leftRightText('Tax ' + Number(totals.taxRate || 0) + '%', formatRupiah(totals.taxAmount), 32));
+  lines.push(leftRightText('Service ' + Number(totals.serviceRate || 0) + '%', formatRupiah(totals.serviceAmount), 32));
+  lines.push(leftRightText('Total', formatRupiah(totals.roundedTotal), 32));
+  lines.push(leftRightText('Bayar', formatRupiah(totals.paidAmount), 32));
+  lines.push(leftRightText('Kembali', formatRupiah(totals.changeAmount), 32));
+  lines.push('--------------------------------');
+
+  if (store.footer) {
+    lines.push(centerText(store.footer, 32));
+  }
+
+  return lines.join('\n');
+}
+
+function buildKitchenReceiptText(receipt) {
+  const trx = receipt.transaction || {};
+  const items = receipt.items || [];
+
+  const lines = [];
+
+  lines.push(centerText('KITCHEN ORDER', 32));
+  lines.push('--------------------------------');
+  lines.push('No: ' + (trx.transactionId || '-'));
+  lines.push('Jam: ' + (trx.time || '-'));
+  lines.push('Kasir: ' + (trx.cashierName || '-'));
+  lines.push('--------------------------------');
+
+  items.forEach(function (item) {
+    lines.push(Number(item.qty || 0) + 'x ' + String(item.menuName || ''));
+  });
+
+  lines.push('--------------------------------');
+
+  return lines.join('\n');
+}
+
+function centerText(text, width) {
+  const clean = String(text || '');
+
+  if (clean.length >= width) {
+    return clean.slice(0, width);
+  }
+
+  const left = Math.floor((width - clean.length) / 2);
+  return ' '.repeat(left) + clean;
+}
+
+function leftRightText(left, right, width) {
+  const cleanLeft = String(left || '');
+  const cleanRight = String(right || '');
+
+  const space = width - cleanLeft.length - cleanRight.length;
+
+  if (space <= 1) {
+    return cleanLeft + ' ' + cleanRight;
+  }
+
+  return cleanLeft + ' '.repeat(space) + cleanRight;
+}
+
+function closeSuccessModal() {
+  document.getElementById('successModal').classList.add('hidden');
+
+  const printArea = document.getElementById('printArea');
+  if (printArea) {
+    printArea.innerHTML = '';
+  }
+}
+
+function lockProtectedArea(area) {
+  if (area === 'dashboard') {
+    state.dashboardUnlocked = false;
+    sessionStorage.removeItem('pos_dashboard_unlocked');
+
+    const locked = document.getElementById('dashboardLocked');
+    const content = document.getElementById('dashboardContent');
+
+    if (locked) locked.classList.remove('hidden');
+    if (content) content.classList.add('hidden');
+
+    showToast('Dashboard berhasil dikunci.');
+    return;
+  }
+
+  if (area === 'therapist') {
+    state.therapistUnlocked = false;
+    sessionStorage.removeItem('pos_therapist_unlocked');
+
+    const locked = document.getElementById('therapisLocked');
+    const content = document.getElementById('therapisContent');
+
+    if (locked) locked.classList.remove('hidden');
+    if (content) content.classList.add('hidden');
+
+    showToast('Master Terapis berhasil dikunci.');
+    return;
+  }
+
+  if (area === 'superadmin') {
+    state.superadminUnlocked = false;
+    sessionStorage.removeItem('pos_superadmin_unlocked');
+
+    const locked = document.getElementById('konsolidasiLocked');
+    const content = document.getElementById('konsolidasiContent');
+
+    if (locked) locked.classList.remove('hidden');
+    if (content) content.classList.add('hidden');
+
+    showToast('Konsolidasi berhasil dikunci.');
+    return;
+  }
+
+  if (area === 'config') {
+    state.configUnlocked = false;
+    sessionStorage.removeItem('pos_config_unlocked');
+
+    const locked = document.getElementById('configLocked');
+    const content = document.getElementById('configContent');
+
+    if (locked) locked.classList.remove('hidden');
+    if (content) content.classList.add('hidden');
+
+    showToast('Config berhasil dikunci.');
+    return;
+  }
+}
+
+/* =====================================================
+   NON-CASH PAYMENT MODAL
+===================================================== */
+
+function openNonCashPaymentModal(method, totalAmount) {
+  const modal = document.getElementById('nonCashPaymentModal');
+  const icon = document.getElementById('nonCashIcon');
+  const title = document.getElementById('nonCashTitle');
+  const desc = document.getElementById('nonCashDescription');
+  const total = document.getElementById('nonCashTotal');
+
+  const qrisBox = document.getElementById('qrisPaymentBox');
+  const transferBox = document.getElementById('transferPaymentBox');
+
+  qrisBox.classList.add('hidden');
+  transferBox.classList.add('hidden');
+
+  total.textContent = formatRupiah(totalAmount);
+
+  if (method === 'QRIS') {
+    icon.textContent = '📱';
+    title.textContent = 'Pembayaran QRIS';
+    desc.textContent = 'Tunjukkan QRIS ini ke customer, lalu konfirmasi setelah pembayaran berhasil.';
+
+    const qrisUrl = state.config.qrisImageUrl || '';
+    const qrisImg = document.getElementById('qrisImagePreview');
+
+    const qrisError = document.getElementById('qrisImageError');
+
+    if (qrisError) {
+      qrisError.classList.add('hidden');
+    }
+
+    if (qrisUrl) {
+      qrisImg.src = qrisUrl;
+      qrisImg.style.display = 'block';
+    } else {
+      qrisImg.removeAttribute('src');
+      qrisImg.style.display = 'none';
+
+      if (qrisError) {
+        qrisError.classList.remove('hidden');
+      }
+
+      showToast('QRIS_IMAGE_URL belum diisi di CONFIG.', 'error');
+    }
+
+    qrisBox.classList.remove('hidden');
+  }
+
+  if (method === 'Transfer') {
+    icon.textContent = '🏦';
+    title.textContent = 'Pembayaran Transfer';
+    desc.textContent = 'Pastikan customer transfer sesuai total pembayaran.';
+
+    document.getElementById('transferBankName').textContent = state.config.bankName || '-';
+    document.getElementById('transferAccountNumber').textContent = state.config.bankAccountNumber || '-';
+    document.getElementById('transferAccountName').textContent = state.config.bankAccountName || '-';
+
+    const note = state.config.transferNote || 'Pastikan pembayaran sudah diterima sebelum klik Sudah Dibayar.';
+    document.getElementById('transferNoteText').textContent = note;
+
+    transferBox.classList.remove('hidden');
+  }
+
+  modal.classList.remove('hidden');
+}
+
+function cancelNonCashPayment() {
+  state.pendingCheckoutPayload = null;
+  document.getElementById('nonCashPaymentModal').classList.add('hidden');
+  showToast('Pembayaran dibatalkan.');
+}
+
+function confirmNonCashPayment() {
+  if (!state.pendingCheckoutPayload) {
+    showToast('Data checkout tidak ditemukan.', 'error');
+    return;
+  }
+
+  const payload = state.pendingCheckoutPayload;
+  state.pendingCheckoutPayload = null;
+
+  document.getElementById('nonCashPaymentModal').classList.add('hidden');
+
+  submitCheckout(payload);
+}
+
+function submitCheckout(payload) {
+  setLoading(true, 'Memproses checkout...');
+
+  google.script.run
+    .withSuccessHandler(function (res) {
+      setLoading(false);
+
+      if (!res.success) {
+        showToast(res.message || 'Checkout gagal.', 'error');
+        return;
+      }
+
+      state.lastReceipt = res.data.receipt || null;
+
+      state.cart = [];
+      state.paidAmount = 0;
+      state.paymentMethod = 'Cash';
+
+      if (res.data && res.data.menus) {
+        state.menus = res.data.menus.menus || [];
+        state.categories = res.data.menus.categories || [];
+      }
+
+      syncPaidInputs();
+      setPaymentMethod('Cash');
+      renderCategoryFilter();
+      renderMenus();
+      renderCart();
+      updateSummary();
+      closeMobileCart();
+
+      showSuccessModal(res.data.transactionId);
+    })
+    .withFailureHandler(function (err) {
+      setLoading(false);
+      showToast(getErrorMessage(err), 'error');
+    })
+    .checkoutOrder(payload);
+}
+
+function handleQrisImageError() {
+  const img = document.getElementById('qrisImagePreview');
+  const errorBox = document.getElementById('qrisImageError');
+
+  if (img) {
+    img.style.display = 'none';
+  }
+
+  if (errorBox) {
+    errorBox.classList.remove('hidden');
+  }
+}
+
+</script>

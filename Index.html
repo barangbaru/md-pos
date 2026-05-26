@@ -1,0 +1,1095 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top" />
+    <?!= include('Style'); ?>
+  </head>
+
+  <body>
+    <div id="app">
+      <!-- LOGIN SCREEN -->
+      <section id="loginScreen" class="login-screen">
+        <div class="login-card">
+          <div class="brand-badge">🧘🏻‍♀️</div>
+          <h1>POS System</h1>
+          <p>Login kasir untuk mulai transaksi.</p>
+
+          <div class="form-group">
+            <label>Nama Kasir</label>
+            <input
+              id="cashierNameInput"
+              type="text"
+              placeholder="Contoh: Farkhan"
+              autocomplete="off"
+            />
+          </div>
+
+          <div class="form-group">
+            <label>Passcode</label>
+            <input
+              id="cashierPasscodeInput"
+              type="password"
+              placeholder="Masukkan passcode"
+            />
+          </div>
+
+          <button class="primary-btn full-btn" onclick="handleLogin()">
+            Masuk Dashboard
+          </button>
+
+          <p id="loginError" class="error-text"></p>
+        </div>
+      </section>
+
+      <!-- MAIN APP -->
+      <section id="mainApp" class="main-app hidden">
+        <!-- SIDEBAR DESKTOP -->
+        <aside class="sidebar">
+          <div class="sidebar-brand">
+            <div class="sidebar-logo">🧘🏻‍♀️</div>
+            <div>
+              <h2 id="sidebarStoreName">Pos System</h2>
+              <p>POS Dashboard</p>
+            </div>
+          </div>
+
+          <nav class="side-nav">
+            <button class="nav-item active" data-tab="pos" onclick="switchTab('pos')">
+              <span>🛒</span>
+              <span>POS Kasir</span>
+            </button>
+
+            <button class="nav-item" data-tab="stock" onclick="switchTab('stock')">
+              <span>📦</span>
+              <span>Manage Stock</span>
+            </button>
+
+            <button class="nav-item" data-tab="pengeluaran" onclick="switchTab('pengeluaran')">
+              <span>💸</span>
+              <span>Pengeluaran</span>
+            </button>
+
+            <button class="nav-item" data-tab="terapis" onclick="switchTab('terapis')">
+              <span>💆</span>
+              <span>Terapis</span>
+            </button>
+
+            <button class="nav-item" data-tab="dashboard" onclick="switchTab('dashboard')">
+              <span>📊</span>
+              <span>Dashboard</span>
+            </button>
+
+            <button class="nav-item" data-tab="konsolidasi" onclick="switchTab('konsolidasi')">
+              <span>📑</span>
+              <span>Konsolidasi</span>
+            </button>
+
+            <button class="nav-item" data-tab="config" onclick="switchTab('config')">
+              <span>⚙️</span>
+              <span>Config</span>
+            </button>
+          </nav>
+
+          <div class="sidebar-footer">
+            <p>Kasir</p>
+            <strong id="sidebarCashierName">-</strong>
+            <button class="ghost-btn" onclick="handleLogout()">Logout</button>
+          </div>
+        </aside>
+
+        <!-- CONTENT -->
+        <main class="content">
+          <!-- TOPBAR -->
+          <header class="topbar">
+            <div>
+              <p class="eyebrow">Point of Sale</p>
+              <h1 id="pageTitle">POS Kasir</h1>
+            </div>
+
+            <div class="topbar-actions">
+              <button class="small-btn" onclick="refreshInitialData()">Refresh</button>
+              <div class="cashier-wrapper">
+                <div class="cashier-pill" onclick="toggleCashierMenu(event)">
+                  <span>👤</span>
+                  <span id="topbarCashierName">Kasir</span>
+                  <span class="cashier-caret">⌄</span>
+                </div>
+
+                <div class="cashier-dropdown" id="cashierDropdown">
+                  <button onclick="handleCashierMenuAction('refresh')">🔄 Refresh Data</button>
+                  <button onclick="handleCashierMenuAction('stock')">📦 Stock</button>
+                  <button onclick="handleCashierMenuAction('pengeluaran')">💸 Pengeluaran</button>
+                  <button onclick="handleCashierMenuAction('dashboard')">📊 Dashboard</button>
+                  <button onclick="handleCashierMenuAction('config')">⚙️ Config</button>
+                  <button class="danger" onclick="handleCashierMenuAction('logout')">🚪 Logout</button>
+                </div>
+              </div>
+
+            </div>
+          </header>
+
+          <!-- POS TAB -->
+          <section id="tab-pos" class="tab-panel active">
+            <div class="pos-layout">
+              <!-- MENU AREA -->
+              <div class="menu-area">
+                <div class="section-card controls-card">
+                  <div class="search-box">
+                    <span>🔎</span>
+                    <input
+                      id="menuSearchInput"
+                      type="text"
+                      placeholder="Cari menu..."
+                      oninput="renderMenus()"
+                    />
+                  </div>
+
+                  <div id="categoryFilter" class="category-filter"></div>
+                </div>
+
+                <div id="menuGrid" class="menu-grid"></div>
+              </div>
+
+              <!-- CART DESKTOP -->
+              <aside class="cart-panel desktop-cart">
+                <div class="cart-header">
+                  <div>
+                    <p class="eyebrow">Order</p>
+                    <h2>Cart Pesanan</h2>
+                  </div>
+                  <button class="icon-btn" onclick="clearCart()" title="Kosongkan cart">
+                    🗑️
+                  </button>
+                </div>
+
+                <div id="cartItems" class="cart-items"></div>
+
+                <div class="payment-box">
+                  <label>Metode Pembayaran</label>
+                  <div class="payment-methods">
+                    
+                    <button class="payment-btn active" data-method="Cash" onclick="setPaymentMethod('Cash')">
+                      💵 Cash
+                    </button>
+                    <button class="payment-btn" data-method="QRIS" onclick="setPaymentMethod('QRIS')">
+                      📱 QRIS
+                    </button>
+                    <button class="payment-btn" data-method="Transfer" onclick="setPaymentMethod('Transfer')">
+                      🏦 Transfer
+                    </button>
+                  </div>
+
+                  <div id="paymentMethodInfo" class="payment-method-info hidden"></div>
+
+                  <div id="cashInputWrapper" class="form-group compact">
+                    <label>Uang Diterima</label>
+                    <input
+                      id="paidAmountInput"
+                      type="text"
+                      inputmode="numeric"
+                      placeholder="Rp 0"
+                      oninput="handlePaidInput(this)"
+                    />
+                    <div id="quickCashButtons" class="quick-cash-buttons"></div>
+                  </div>
+                </div>
+
+                <div class="summary-box">
+                  <div class="summary-row">
+                    <span>Subtotal</span>
+                    <strong id="summarySubtotal">Rp 0</strong>
+                  </div>
+                  <div class="summary-row">
+                    <span id="summaryTaxLabel">Tax</span>
+                    <strong id="summaryTax">Rp 0</strong>
+                  </div>
+                  <div class="summary-row">
+                    <span id="summaryServiceLabel">Service</span>
+                    <strong id="summaryService">Rp 0</strong>
+                  </div>
+                  <div class="summary-row total">
+                    <span>Total</span>
+                    <strong id="summaryTotal">Rp 0</strong>
+                  </div>
+                  <div class="summary-row">
+                    <span>Kembalian</span>
+                    <strong id="summaryChange">Rp 0</strong>
+                  </div>
+                </div>
+
+                <button class="checkout-btn" onclick="handleCheckout()">
+                  Checkout
+                </button>
+              </aside>
+            </div>
+          </section>
+
+          <!-- STOCK PLACEHOLDER -->
+          <!-- STOCK TAB -->
+          <section id="tab-stock" class="tab-panel">
+            <div class="stock-page">
+              <div class="section-card stock-toolbar">
+                <div>
+                  <p class="eyebrow">Inventory</p>
+                  <h2>Manage Stock Menu</h2>
+                  <p>Update stock menu langsung dari dashboard kasir.</p>
+                </div>
+
+                <button class="small-btn" onclick="renderStockTable()">Refresh View</button>
+              </div>
+
+              <div class="section-card table-card">
+                <div class="table-wrapper">
+                  <table class="data-table">
+                    <thead>
+                      <tr>
+                        <th>Menu</th>
+                        <th>Kategori</th>
+                        <th>Harga</th>
+                        <th>Modal/HPP</th>
+                        <th>Stock</th>
+                        <th>Status</th>
+                        <th>Update Stock</th>
+                      </tr>
+                    </thead>
+                    <tbody id="stockTableBody"></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- PENGELUARAN TAB -->
+          <section id="tab-pengeluaran" class="tab-panel">
+            <div class="stock-page">
+              <div class="section-card stock-toolbar">
+                <div>
+                  <p class="eyebrow">Expenses</p>
+                  <h2>Pengeluaran Harian</h2>
+                  <p>Catat pengeluaran operasional dan kasbon/fee kasir.</p>
+                </div>
+                <button class="small-btn" onclick="loadPengeluaranData()">Refresh View</button>
+              </div>
+
+              <div class="section-card config-card">
+                <div class="card-title-row"><div><p class="eyebrow">Tambah Pengeluaran</p><h2>Input Pengeluaran</h2></div></div>
+                <div class="config-grid">
+                  <div class="form-group">
+                    <label>Jenis Pengeluaran</label>
+                    <select id="expenseTypeInput" class="select-input readonly-select" disabled>
+                      <option value="Sharing">Operasional</option>
+                      <option value="Personal">Pengeluaran Pribadi Kasir / Kasbon / Fee</option>
+                    </select>
+                    <small class="field-help">Jenis otomatis mengikuti kategori.</small>
+                  </div>
+                  <div class="form-group" id="personalCashierWrapper" style="display:none;">
+                    <label>Nama Kasir Penerima</label>
+                    <input id="expensePersonalCashierInput" type="text" placeholder="Otomatis dari nama kasir login" readonly />
+                  </div>
+                  <div class="form-group">
+                    <label>Kategori</label>
+                    <select id="expenseCategoryInput" class="select-input" onchange="handleExpenseCategoryChange()">
+                      <option value="">Pilih kategori</option>
+                      <option value="Belanja Bahan">Belanja Bahan</option>
+                      <option value="Operasional">Operasional</option>
+                      <option value="Transport">Transport</option>
+                      <option value="Listrik / Air / Internet">Listrik / Air / Internet</option>
+                      <option value="Kasbon">Kasbon</option>
+                      <option value="Fee Kasir">Fee Kasir</option>
+                      <option value="Lainnya">Lainnya</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label>Nilai Pengeluaran</label>
+                    <input id="expenseAmountInput" type="text" inputmode="numeric" placeholder="Rp 0" oninput="handleExpenseAmountInput(this)" />
+                  </div>
+                  <div class="form-group full-span">
+                    <label>Keterangan</label>
+                    <input id="expenseDescriptionInput" type="text" placeholder="Contoh: Beli bahan, kasbon kasir, fee closing shift" />
+                  </div>
+                </div>
+                <button class="checkout-btn" onclick="saveExpense()">Simpan Pengeluaran</button>
+              </div>
+
+              <div class="section-card table-card">
+                <div class="table-wrapper">
+                  <table class="data-table">
+                    <thead><tr><th>Waktu</th><th>Input Oleh</th><th>Jenis</th><th>Kasir Penerima</th><th>Kategori</th><th>Keterangan</th><th>Nilai</th></tr></thead>
+                    <tbody id="pengeluaranTableBody"></tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div class="section-card expense-filter-card">
+                <div class="card-title-row">
+                  <div><p class="eyebrow">Filter & Summary</p><h2>Report Pengeluaran</h2></div>
+                  <div class="expense-summary-inline"><span>Total Hasil Filter</span><strong id="expenseFilteredTotal">Rp 0</strong></div>
+                </div>
+                <div class="expense-filter-grid">
+                  <div class="form-group"><label>Dari Tanggal</label><input id="expenseFilterStartDate" type="date" onchange="renderPengeluaranTable()" /></div>
+                  <div class="form-group"><label>Sampai Tanggal</label><input id="expenseFilterEndDate" type="date" onchange="renderPengeluaranTable()" /></div>
+                  <div class="form-group"><label>Jenis</label><select id="expenseFilterType" class="select-input" onchange="renderPengeluaranTable()"><option value="All">Semua Jenis</option><option value="Sharing">Operasional</option><option value="Personal">Pribadi Kasir / Kasbon / Fee</option></select></div>
+                  <div class="form-group"><label>Kategori</label><select id="expenseFilterCategory" class="select-input" onchange="renderPengeluaranTable()"><option value="All">Semua Kategori</option></select></div>
+                  <div class="form-group"><label>Kasir / Penerima</label><input id="expenseFilterCashier" type="text" placeholder="Cari nama kasir" oninput="renderPengeluaranTable()" /></div>
+                  <div class="form-group"><label>Cari Keterangan</label><input id="expenseFilterSearch" type="text" placeholder="Cari keterangan" oninput="renderPengeluaranTable()" /></div>
+                  <div class="form-group"><label>Sort</label><select id="expenseSortBy" class="select-input" onchange="renderPengeluaranTable()"><option value="newest">Terbaru</option><option value="oldest">Terlama</option><option value="amount_desc">Nilai Terbesar</option><option value="amount_asc">Nilai Terkecil</option><option value="category">Kategori A-Z</option><option value="cashier">Kasir A-Z</option></select></div>
+                  <div class="form-group expense-filter-actions"><label>&nbsp;</label><button class="small-btn" onclick="resetExpenseFilters()">Reset Filter</button></div>
+                </div>
+                <div class="expense-summary-grid">
+                  <div class="expense-summary-card"><span>Jumlah Data</span><strong id="expenseFilteredCount">0</strong></div>
+                  <div class="expense-summary-card"><span>Operasional</span><strong id="expenseSharingTotal">Rp 0</strong></div>
+                  <div class="expense-summary-card"><span>Pribadi/Kasbon/Fee</span><strong id="expensePersonalTotal">Rp 0</strong></div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- TERAPIS TAB -->
+          <section id="tab-terapis" class="tab-panel">
+            <div id="therapisLocked" class="locked-state">
+              <div>🔒</div>
+              <h2>Master Terapis Terkunci</h2>
+              <p>Masukkan passcode untuk mengelola data terapis.</p>
+              <button class="primary-btn" onclick="openProtectedModal('therapist')">
+                Buka Master Terapis
+              </button>
+            </div>
+
+            <div id="therapisContent" class="stock-page hidden">
+              <!-- Toolbar -->
+              <div class="section-card stock-toolbar">
+                <div>
+                  <p class="eyebrow">Therapist Management</p>
+                  <h2>Master Terapis & Input Point</h2>
+                  <p>Kelola data terapis dan catat point layanan yang dihasilkan.</p>
+                </div>
+                <div class="card-actions">
+                  <button class="small-btn" onclick="loadTherapistData()">Refresh</button>
+                  <button class="lock-btn" onclick="lockProtectedArea('therapist')">🔒 Lock</button>
+                </div>
+              </div>
+
+              <!-- Form Master Terapis -->
+              <div class="section-card config-card">
+                <div class="card-title-row">
+                  <div><p class="eyebrow">Master Data</p><h2 id="therapistFormTitle">Tambah Terapis Baru</h2></div>
+                  <button class="small-btn" id="therapistFormCancelBtn" style="display:none;" onclick="cancelTherapistForm()">Batal Edit</button>
+                </div>
+                <div class="config-grid">
+                  <input type="hidden" id="therapistFormId" />
+                  <div class="form-group">
+                    <label>Nama Terapis <span style="color:red;">*</span></label>
+                    <input id="therapistFormName" type="text" placeholder="Nama lengkap terapis" />
+                  </div>
+                  <div class="form-group">
+                    <label>No. HP/WA</label>
+                    <input id="therapistFormPhone" type="text" placeholder="08xx-xxxx-xxxx" />
+                  </div>
+                  <div class="form-group">
+                    <label>Nilai Default 1 Point (Rp)</label>
+                    <input id="therapistFormPointValue" type="text" inputmode="numeric" placeholder="Rp 10.000" oninput="handleRupiahInput(this)" />
+                  </div>
+                  <div class="form-group">
+                    <label>Status</label>
+                    <select id="therapistFormActive" class="select-input">
+                      <option value="true">Aktif</option>
+                      <option value="false">Non-aktif</option>
+                    </select>
+                  </div>
+                  <div class="form-group full-span">
+                    <label>Catatan</label>
+                    <input id="therapistFormNotes" type="text" placeholder="Catatan tambahan (opsional)" />
+                  </div>
+                </div>
+                <button class="checkout-btn" onclick="saveTherapistForm()">Simpan Terapis</button>
+              </div>
+
+              <!-- Tabel Master Terapis -->
+              <div class="section-card table-card">
+                <div class="card-title-row">
+                  <div><h3>Daftar Terapis</h3></div>
+                </div>
+                <div class="table-wrapper">
+                  <table class="data-table">
+                    <thead>
+                      <tr>
+                        <th>ID</th>
+                        <th>Nama</th>
+                        <th>No. HP</th>
+                        <th>Point Value</th>
+                        <th>Status</th>
+                        <th>Catatan</th>
+                        <th>Aksi</th>
+                      </tr>
+                    </thead>
+                    <tbody id="therapistMasterTableBody"></tbody>
+                  </table>
+                </div>
+              </div>
+
+              <!-- Form Input Point -->
+              <div class="section-card config-card">
+                <div class="card-title-row">
+                  <div><p class="eyebrow">Input Point</p><h2>Catat Hasil Layanan Terapis</h2></div>
+                </div>
+                <div class="config-grid">
+                  <div class="form-group">
+                    <label>Pilih Terapis <span style="color:red;">*</span></label>
+                    <select id="pointFormTherapistId" class="select-input">
+                      <option value="">-- Pilih Terapis --</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label>Nama Layanan</label>
+                    <input id="pointFormServiceName" type="text" placeholder="Contoh: Massage, Facial" />
+                  </div>
+                  <div class="form-group">
+                    <label>Qty</label>
+                    <input id="pointFormQty" type="number" value="1" min="1" />
+                  </div>
+                  <div class="form-group">
+                    <label>Point per Unit <span style="color:red;">*</span></label>
+                    <input id="pointFormPointValue" type="text" inputmode="numeric" placeholder="10000" oninput="handleRupiahInput(this)" />
+                  </div>
+                  <div class="form-group">
+                    <label>Total Tarif Layanan (Rp)</label>
+                    <input id="pointFormAmount" type="text" inputmode="numeric" placeholder="Opsional" oninput="handleRupiahInput(this)" />
+                  </div>
+                  <div class="form-group full-span">
+                    <label>Catatan</label>
+                    <input id="pointFormNotes" type="text" placeholder="Catatan tambahan (opsional)" />
+                  </div>
+                </div>
+                <button class="checkout-btn" onclick="saveTherapistPoint()">Simpan Point</button>
+              </div>
+
+              <!-- Tabel Log Point -->
+              <div class="section-card table-card">
+                <div class="card-title-row">
+                  <div><h3>Riwayat Point Terapis</h3></div>
+                  <div class="card-actions">
+                    <input id="pointFilterTherapist" type="text" placeholder="Filter nama terapis" oninput="renderTherapistPointTable()" style="padding:6px 10px; border-radius:8px; border:1px solid var(--border);" />
+                  </div>
+                </div>
+                <div class="table-wrapper">
+                  <table class="data-table">
+                    <thead>
+                      <tr>
+                        <th>Waktu</th>
+                        <th>Terapis</th>
+                        <th>Layanan</th>
+                        <th>Qty</th>
+                        <th>Point/Unit</th>
+                        <th>Total Point</th>
+                        <th>Tarif</th>
+                        <th>Catatan</th>
+                      </tr>
+                    </thead>
+                    <tbody id="therapistPointTableBody"></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- DASHBOARD PLACEHOLDER -->
+          <!-- DASHBOARD TAB -->
+          <section id="tab-dashboard" class="tab-panel">
+            <div id="dashboardLocked" class="locked-state">
+              <div>🔒</div>
+              <h2>Dashboard Penjualan Terkunci</h2>
+              <p>Masukkan passcode untuk melihat data penjualan.</p>
+              <button class="primary-btn" onclick="openProtectedModal('dashboard')">
+                Buka Dashboard
+              </button>
+            </div>
+
+            <div id="dashboardContent" class="dashboard-page hidden">
+
+              <!-- ====== FILTER RANGE TANGGAL ====== -->
+              <div class="section-card date-filter-card">
+                <div class="date-filter-header">
+                  <div>
+                    <p class="eyebrow">Filter</p>
+                    <h2>Range Tanggal Dashboard</h2>
+                    <p class="date-filter-note" id="dateFilterNote">Menampilkan data hari ini.</p>
+                  </div>
+                  <div class="date-filter-presets">
+                    <button type="button" class="preset-btn" data-preset="today">Hari Ini</button>
+                    <button type="button" class="preset-btn" data-preset="yesterday">Kemarin</button>
+                    <button type="button" class="preset-btn" data-preset="last7">7 Hari</button>
+                    <button type="button" class="preset-btn" data-preset="last30">30 Hari</button>
+                    <button type="button" class="preset-btn" data-preset="thisMonth">Bulan Ini</button>
+                    <button type="button" class="preset-btn" data-preset="lastMonth">Bulan Lalu</button>
+                  </div>
+                </div>
+                <div class="date-filter-controls">
+                  <div class="date-filter-field">
+                    <label for="dashStartDate">Dari Tanggal</label>
+                    <input type="date" id="dashStartDate" />
+                  </div>
+                  <div class="date-filter-field">
+                    <label for="dashEndDate">Sampai Tanggal</label>
+                    <input type="date" id="dashEndDate" />
+                  </div>
+                  <div class="date-filter-actions">
+                    <button type="button" class="primary-btn" onclick="applyDashboardFilter()">Terapkan</button>
+                    <button type="button" class="small-btn" onclick="resetDashboardFilter()">Reset</button>
+                  </div>
+                </div>
+              </div>
+              <!-- ====== END FILTER ====== -->
+
+              <div class="dashboard-grid">
+                <div class="metric-card"><p>Omzet</p><h2 id="cardRevenueToday">Rp 0</h2><span id="cardRevenueSubtitle">Total transaksi paid</span></div>
+                <div class="metric-card"><p>Gross Profit</p><h2 id="cardGrossProfitToday">Rp 0</h2><span>Penjualan item - modal/HPP</span></div>
+                <div class="metric-card"><p>Pengeluaran</p><h2 id="cardExpensesToday">Rp 0</h2><span id="cardExpenseBreakdown">Operasional Rp 0 / Pribadi Rp 0</span></div>
+                <div class="metric-card"><p>Net Profit</p><h2 id="cardNetProfitToday">Rp 0</h2><span>Gross profit - pengeluaran</span></div>
+                <div class="metric-card"><p>Transaksi</p><h2 id="cardTransactions">0</h2><span id="cardTransactionsSubtitle">Jumlah checkout pada range</span></div>
+                <div class="metric-card"><p>Rata-rata / Hari</p><h2 id="cardAvgPerDay">Rp 0</h2><span id="cardAvgPerDaySubtitle">Omzet rata-rata per hari</span></div>
+                <div class="metric-card"><p>Top Kasir</p><h2 id="cardTopCashier">-</h2><span id="cardTopCashierRevenue">Rp 0 / 0 trx</span></div>
+              </div>
+
+              <div class="dashboard-layout">
+                <div class="section-card chart-card">
+                  <div class="card-title-row">
+                    <div>
+                      <p class="eyebrow">Last 7 Days</p>
+                      <h2>Omzet 7 Hari Terakhir</h2>
+                    </div>
+
+                    <div class="card-actions">
+                      <button class="small-btn" onclick="loadDashboardData()">Refresh</button>
+                      <button class="lock-btn" onclick="lockProtectedArea('dashboard')">🔒 Lock</button>
+                    </div>
+                  </div>
+
+                  <div id="revenueChart" class="simple-chart"></div>
+                </div>
+
+                <div class="section-card side-report-card">
+                  <div class="card-title-row">
+                    <div>
+                      <p class="eyebrow" id="sideReportEyebrow">Today</p>
+                      <h2>Ringkasan</h2>
+                    </div>
+                  </div>
+
+                  <div class="mini-report">
+                    <h3>Payment Method</h3>
+                    <div id="paymentSummaryList"></div>
+                  </div>
+
+                  <div class="mini-report"><h3>Top Kasir</h3><div id="topCashiersList"></div></div>
+                  <div class="mini-report"><h3>Pengeluaran Operasional</h3><div id="sharingExpensesList"></div></div>
+                  <div class="mini-report"><h3>Kasbon / Fee Kasir</h3><div id="personalExpensesList"></div></div>
+                </div>
+              </div>
+
+              <div class="section-card monthly-report-card">
+                <div class="card-title-row">
+                  <div>
+                    <p class="eyebrow" id="rangeReportEyebrow">Rekap Range</p>
+                    <h2 id="rangeReportTitle">Rekap Penjualan</h2>
+                    <p class="monthly-report-note" id="rangeReportNote">Rekap dari range tanggal yang dipilih.</p>
+                  </div>
+                  <div class="monthly-summary-box">
+                    <span>Total Omzet</span>
+                    <strong id="monthlySummaryRevenue">Rp 0</strong>
+                  </div>
+                </div>
+
+                <div class="monthly-summary-grid">
+                  <div class="expense-summary-card"><span>Total Transaksi</span><strong id="monthlySummaryTransactions">0</strong></div>
+                  <div class="expense-summary-card"><span>Gross Profit</span><strong id="monthlySummaryGrossProfit">Rp 0</strong></div>
+                  <div class="expense-summary-card"><span>Pengeluaran</span><strong id="monthlySummaryExpenses">Rp 0</strong></div>
+                  <div class="expense-summary-card"><span>Net Profit</span><strong id="monthlySummaryNetProfit">Rp 0</strong></div>
+                </div>
+
+                <div class="table-wrapper monthly-table-wrapper">
+                  <table class="data-table monthly-sales-table">
+                    <thead>
+                      <tr>
+                        <th>Tanggal</th>
+                        <th>Transaksi</th>
+                        <th>Omzet</th>
+                        <th>Gross Profit</th>
+                        <th>Pengeluaran</th>
+                        <th>Net Profit</th>
+                      </tr>
+                    </thead>
+                    <tbody id="monthlySalesTableBody"></tbody>
+                  </table>
+                </div>
+              </div>
+
+            </div>
+          </section>
+
+          <!-- KONSOLIDASI TAB (Superadmin) -->
+          <section id="tab-konsolidasi" class="tab-panel">
+            <div id="konsolidasiLocked" class="locked-state">
+              <div>🔒</div>
+              <h2>Konsolidasi Superadmin Terkunci</h2>
+              <p>Masukkan passcode superadmin untuk melihat settlement terapis.</p>
+              <button class="primary-btn" onclick="openProtectedModal('superadmin')">
+                Buka Konsolidasi
+              </button>
+            </div>
+
+            <div id="konsolidasiContent" class="dashboard-page hidden">
+              <!-- Filter Range -->
+              <div class="section-card date-filter-card">
+                <div class="date-filter-header">
+                  <div>
+                    <p class="eyebrow">Filter</p>
+                    <h2>Range Konsolidasi Terapis</h2>
+                    <p class="date-filter-note" id="konsolidasiDateNote">Menampilkan data hari ini.</p>
+                  </div>
+                  <div class="date-filter-presets">
+                    <button type="button" class="preset-btn" data-preset-target="konsolidasi" data-preset="today">Hari Ini</button>
+                    <button type="button" class="preset-btn" data-preset-target="konsolidasi" data-preset="last7">7 Hari</button>
+                    <button type="button" class="preset-btn" data-preset-target="konsolidasi" data-preset="last30">30 Hari</button>
+                    <button type="button" class="preset-btn" data-preset-target="konsolidasi" data-preset="thisMonth">Bulan Ini</button>
+                  </div>
+                </div>
+                <div class="date-filter-controls">
+                  <div class="date-filter-field">
+                    <label for="konsolidasiStartDate">Dari Tanggal</label>
+                    <input type="date" id="konsolidasiStartDate" />
+                  </div>
+                  <div class="date-filter-field">
+                    <label for="konsolidasiEndDate">Sampai Tanggal</label>
+                    <input type="date" id="konsolidasiEndDate" />
+                  </div>
+                  <div class="date-filter-field">
+                    <label for="konsolidasiSharePercent">% Bagi Hasil</label>
+                    <input type="number" id="konsolidasiSharePercent" value="50" min="0" max="100" style="padding:8px 10px; border-radius:8px; border:1px solid var(--border);" />
+                  </div>
+                  <div class="date-filter-actions">
+                    <button type="button" class="primary-btn" onclick="applyKonsolidasiFilter()">Terapkan</button>
+                    <button type="button" class="small-btn" onclick="resetKonsolidasiFilter()">Reset</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Summary Cards -->
+              <div class="dashboard-grid">
+                <div class="metric-card"><p>Total Gross</p><h2 id="konsolGross">Rp 0</h2><span>Total nominal point</span></div>
+                <div class="metric-card"><p>Total Share Terapis</p><h2 id="konsolShare">Rp 0</h2><span id="konsolSharePct">50% dari gross</span></div>
+                <div class="metric-card"><p>Total Kasbon</p><h2 id="konsolKasbon">Rp 0</h2><span>Kasbon terapis dalam range</span></div>
+                <div class="metric-card"><p>Net Payout</p><h2 id="konsolNet">Rp 0</h2><span>Share - kasbon</span></div>
+                <div class="metric-card"><p>Jumlah Terapis</p><h2 id="konsolTherapistCount">0</h2><span>Terapis dengan settlement</span></div>
+                <div class="metric-card"><p>Total Entri Point</p><h2 id="konsolEntries">0</h2><span>Jumlah transaksi layanan</span></div>
+              </div>
+
+              <!-- Tabel Settlement per Terapis -->
+              <div class="section-card table-card">
+                <div class="card-title-row">
+                  <div>
+                    <p class="eyebrow">Settlement Report</p>
+                    <h2>Rekap Settlement per Terapis</h2>
+                  </div>
+                  <div class="card-actions">
+                    <button class="small-btn" onclick="loadKonsolidasiData()">Refresh</button>
+                    <button class="lock-btn" onclick="lockProtectedArea('superadmin')">🔒 Lock</button>
+                  </div>
+                </div>
+                <div class="table-wrapper">
+                  <table class="data-table">
+                    <thead>
+                      <tr>
+                        <th>Terapis</th>
+                        <th>Total Point</th>
+                        <th>Gross Nominal</th>
+                        <th>Share (<span id="konsolTableSharePct">50%</span>)</th>
+                        <th>Kasbon</th>
+                        <th>Net Payout</th>
+                        <th>Entri</th>
+                        <th>Kasbon Entri</th>
+                      </tr>
+                    </thead>
+                    <tbody id="konsolidasiTableBody"></tbody>
+                  </table>
+                </div>
+              </div>
+
+              <!-- Chart Harian (opsional, bisa pakai daily breakdown) -->
+              <div class="section-card chart-card">
+                <div class="card-title-row">
+                  <div>
+                    <p class="eyebrow">Trend Harian</p>
+                    <h2>Settlement Harian dalam Range</h2>
+                  </div>
+                </div>
+                <div id="konsolidasiChart" class="simple-chart"></div>
+              </div>
+            </div>
+          </section>
+
+          <!-- CONFIG PLACEHOLDER -->
+          <!-- CONFIG TAB -->
+          <section id="tab-config" class="tab-panel">
+            <div id="configLocked" class="locked-state">
+              <div>🔒</div>
+              <h2>Config Terkunci</h2>
+              <p>Masukkan passcode untuk mengubah tax, service, dan setting toko.</p>
+              <button class="primary-btn" onclick="openProtectedModal('config')">
+                Buka Config
+              </button>
+            </div>
+
+            <div id="configContent" class="config-page hidden">
+              <div class="section-card config-card">
+                <div class="card-title-row">
+                  <div>
+                    <p class="eyebrow">Settings</p>
+                    <h2>Config POS</h2>
+                  </div>
+                  <div class="card-actions">
+                    <button class="small-btn" onclick="fillConfigForm()">Reload</button>
+                    <button class="lock-btn" onclick="lockProtectedArea('config')">🔒 Lock</button>
+                  </div>
+                </div>
+
+                <div class="config-grid">
+                  <div class="form-group">
+                    <label>Nama Toko</label>
+                    <input id="configStoreName" type="text" />
+                  </div>
+
+                  <div class="form-group">
+                    <label>No. Telepon</label>
+                    <input id="configStorePhone" type="text" />
+                  </div>
+
+                  <div class="form-group full-span">
+                    <label>Alamat Toko</label>
+                    <input id="configStoreAddress" type="text" />
+                  </div>
+
+                  <div class="form-group">
+                    <label>Tax Rate (%)</label>
+                    <input id="configTaxRate" type="number" min="0" max="100" />
+                  </div>
+
+                  <div class="form-group">
+                    <label>Service Rate (%)</label>
+                    <input id="configServiceRate" type="number" min="0" max="100" />
+                  </div>
+
+                  <div class="form-group">
+                    <label>Low Stock Limit</label>
+                    <input id="configLowStockLimit" type="number" min="1" />
+                  </div>
+
+                  <div class="form-group">
+                    <label>Passcode Kasir Baru</label>
+                    <input id="configCashierPasscode" type="text" placeholder="Kosongkan jika tidak diganti" />
+                  </div>
+
+                  <div class="form-group">
+                    <label>Passcode Dashboard Baru</label>
+                    <input id="configDashboardPasscode" type="text" placeholder="Kosongkan jika tidak diganti" />
+                  </div>
+
+                  <div class="form-group">
+                    <label>Passcode Config Baru</label>
+                    <input id="configNewConfigPasscode" type="text" placeholder="Kosongkan jika tidak diganti" />
+                  </div>
+
+                  <div class="form-group">
+                    <label>Passcode Terapis Baru</label>
+                    <input id="configTherapistPasscode" type="text" placeholder="Kosongkan jika tidak diganti" />
+                  </div>
+
+                  <div class="form-group">
+                    <label>Passcode Superadmin Baru</label>
+                    <input id="configSuperadminPasscode" type="text" placeholder="Kosongkan jika tidak diganti" />
+                  </div>
+
+                  <div class="form-group">
+                    <label>% Bagi Hasil Terapis</label>
+                    <input id="configTherapistSharePercent" type="number" min="0" max="100" placeholder="50" />
+                    <small class="field-help">Persentase bagi hasil terapis dari total point (default 50%)</small>
+                  </div>
+
+                  <div class="form-group full-span">
+                    <label>Footer Struk</label>
+                    <input id="configReceiptFooter" type="text" />
+                  </div>
+
+                  <div class="form-group full-span">
+                    <label>Passcode Config Saat Ini</label>
+                    <input id="configCurrentPasscode" type="password" placeholder="Wajib untuk menyimpan perubahan" />
+                  </div>
+                </div>
+
+                <button class="checkout-btn" onclick="saveConfig()">
+                  Simpan Config
+                </button>
+              </div>
+            </div>
+          </section>
+
+        <!-- MOBILE BOTTOM NAV -->
+        <nav class="mobile-nav">
+          <button class="mobile-nav-item active" data-tab="pos" onclick="switchTab('pos')">
+            <span>🛒</span>
+            <small>POS</small>
+          </button>
+          <button class="mobile-nav-item" data-tab="stock" onclick="switchTab('stock')">
+            <span>📦</span>
+            <small>Stock</small>
+          </button>
+          <button class="mobile-nav-item" data-tab="pengeluaran" onclick="switchTab('pengeluaran')">
+            <span>💸</span>
+            <small>Expense</small>
+          </button>
+          <button class="mobile-nav-item" data-tab="terapis" onclick="switchTab('terapis')">
+            <span>💆</span>
+            <small>Terapis</small>
+          </button>
+          <button class="mobile-nav-item" data-tab="dashboard" onclick="switchTab('dashboard')">
+            <span>📊</span>
+            <small>Sales</small>
+          </button>
+          <button class="mobile-nav-item" data-tab="konsolidasi" onclick="switchTab('konsolidasi')">
+            <span>📑</span>
+            <small>Konsol</small>
+          </button>
+          <button class="mobile-nav-item" data-tab="config" onclick="switchTab('config')">
+            <span>⚙️</span>
+            <small>Config</small>
+          </button>
+        </nav>
+
+        <!-- MOBILE CART BUTTON -->
+        <button id="mobileCartButton" class="mobile-cart-button" onclick="openMobileCart()">
+          <span>🛒</span>
+          <span id="mobileCartCount">0 item</span>
+          <strong id="mobileCartTotal">Rp 0</strong>
+        </button>
+
+        <!-- MOBILE CART SHEET -->
+        <div id="mobileCartOverlay" class="mobile-cart-overlay" onclick="closeMobileCart()"></div>
+
+        <section id="mobileCartSheet" class="mobile-cart-sheet">
+          <div class="mobile-sheet-handle"></div>
+
+          <div class="cart-header">
+            <div>
+              <p class="eyebrow">Order</p>
+              <h2>Cart Pesanan</h2>
+            </div>
+            <button class="icon-btn" onclick="closeMobileCart()">✕</button>
+          </div>
+
+          <div id="mobileCartItems" class="cart-items"></div>
+
+          <div class="payment-box">
+            <label>Metode Pembayaran</label>
+            <div class="payment-methods">
+              
+              <button class="payment-btn mobile-pay active" data-method="Cash" onclick="setPaymentMethod('Cash')">
+                💵 Cash
+              </button>
+              <button class="payment-btn mobile-pay" data-method="QRIS" onclick="setPaymentMethod('QRIS')">
+                📱 QRIS
+              </button>
+              <button class="payment-btn mobile-pay" data-method="Transfer" onclick="setPaymentMethod('Transfer')">
+                🏦 Transfer
+              </button>
+            </div>
+
+            <div id="mobilePaymentMethodInfo" class="payment-method-info hidden"></div>
+
+            <div id="mobileCashInputWrapper" class="form-group compact">
+              <label>Uang Diterima</label>
+              <input
+                id="mobilePaidAmountInput"
+                type="text"
+                inputmode="numeric"
+                placeholder="Rp 0"
+                oninput="handlePaidInput(this)"
+              />
+              
+              <div id="mobileQuickCashButtons" class="quick-cash-buttons"></div>
+            </div>
+          </div>
+
+          <div class="summary-box">
+            <div class="summary-row">
+              <span>Subtotal</span>
+              <strong id="mobileSummarySubtotal">Rp 0</strong>
+            </div>
+            <div class="summary-row">
+              <span id="mobileSummaryTaxLabel">Tax</span>
+              <strong id="mobileSummaryTax">Rp 0</strong>
+            </div>
+            <div class="summary-row">
+              <span id="mobileSummaryServiceLabel">Service</span>
+              <strong id="mobileSummaryService">Rp 0</strong>
+            </div>
+            <div class="summary-row total">
+              <span>Total</span>
+              <strong id="mobileSummaryTotal">Rp 0</strong>
+            </div>
+            <div class="summary-row">
+              <span>Kembalian</span>
+              <strong id="mobileSummaryChange">Rp 0</strong>
+            </div>
+          </div>
+
+          <button class="checkout-btn" onclick="handleCheckout()">
+            Checkout
+          </button>
+        </section>
+      </section>
+
+      <!-- PROTECTED TAB MODAL -->
+      <div id="protectedModal" class="modal-overlay hidden">
+        <div class="protected-modal">
+          <div class="lock-icon">🔒</div>
+          <h2 id="protectedModalTitle">Akses Terkunci</h2>
+          <p id="protectedModalDesc">Masukkan passcode untuk membuka tab ini.</p>
+
+          <div class="form-group">
+            <label>Passcode</label>
+            <input
+              id="protectedPasscodeInput"
+              type="password"
+              placeholder="Masukkan passcode"
+              onkeydown="handleProtectedEnter(event)"
+            />
+          </div>
+
+          <p id="protectedError" class="error-text"></p>
+
+          <div class="modal-actions">
+            <button class="secondary-btn" onclick="closeProtectedModal()">Batal</button>
+            <button class="primary-btn" onclick="validateProtectedAccess()">Buka</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- NON-CASH PAYMENT MODAL -->
+      <div id="nonCashPaymentModal" class="modal-overlay hidden">
+        <div class="payment-confirm-modal">
+          <div id="nonCashIcon" class="payment-modal-icon">📱</div>
+
+          <h2 id="nonCashTitle">Pembayaran</h2>
+          <p id="nonCashDescription">Selesaikan pembayaran sebelum transaksi disimpan.</p>
+
+          <div class="payment-total-box">
+            <span>Total Bayar</span>
+            <strong id="nonCashTotal">Rp 0</strong>
+          </div>
+
+          <div id="qrisPaymentBox" class="qris-payment-box hidden">
+            <p class="payment-help-text">Scan QRIS berikut untuk pembayaran.</p>
+            <div class="qris-image-frame">
+              <img
+                id="qrisImagePreview"
+                src=""
+                alt="QRIS Payment"
+                onerror="handleQrisImageError()"
+              />
+
+              <div id="qrisImageError" class="qris-image-error hidden">
+                Gambar QRIS gagal dimuat. Cek QRIS_IMAGE_URL di CONFIG dan pastikan link public.
+              </div>
+            </div>
+          </div>
+
+          <div id="transferPaymentBox" class="transfer-payment-box hidden">
+            <p class="payment-help-text">Transfer ke rekening berikut:</p>
+
+            <div class="bank-detail-card">
+              <div class="bank-row">
+                <span>Bank</span>
+                <strong id="transferBankName">-</strong>
+              </div>
+
+              <div class="bank-row">
+                <span>No. Rekening</span>
+                <strong id="transferAccountNumber">-</strong>
+              </div>
+
+              <div class="bank-row">
+                <span>Atas Nama</span>
+                <strong id="transferAccountName">-</strong>
+              </div>
+
+              <div class="bank-note" id="transferNoteText"></div>
+            </div>
+          </div>
+
+          <div class="modal-actions payment-confirm-actions">
+            <button class="secondary-btn" onclick="cancelNonCashPayment()">Batal</button>
+            <button class="primary-btn" onclick="confirmNonCashPayment()">Sudah Dibayar</button>
+          </div>
+
+          <p class="small-note">
+            Transaksi baru akan masuk ke sheet setelah kasir klik "Sudah Dibayar".
+          </p>
+        </div>
+      </div>
+
+      <!-- GLOBAL LOADING -->
+      <div id="loadingOverlay" class="loading-overlay hidden">
+        <div class="loader-card">
+          <div class="spinner"></div>
+          <p id="loadingText">Memproses...</p>
+        </div>
+      </div>
+
+      <!-- TOAST -->
+      <div id="toast" class="toast hidden"></div>
+
+      <!-- CHECKOUT SUCCESS MODAL -->
+      <!-- CHECKOUT SUCCESS MODAL -->
+      <div id="successModal" class="modal-overlay hidden">
+        <div class="receipt-modal">
+          <div class="success-icon">✅</div>
+          <h2>Checkout Berhasil</h2>
+          <p id="successTransactionId">Transaksi berhasil disimpan.</p>
+
+          <div class="receipt-tabs">
+            <button id="paymentReceiptTabBtn" class="receipt-tab-btn active" onclick="switchReceiptTab('payment')">
+              🧾 Struk Pembayaran
+            </button>
+            <button id="kitchenReceiptTabBtn" class="receipt-tab-btn" onclick="switchReceiptTab('kitchen')">
+              🍳 Kitchen Order
+            </button>
+          </div>
+
+          <div class="receipt-preview-wrapper">
+            <div id="paymentReceiptPreview" class="thermal-receipt active"></div>
+            <div id="kitchenReceiptPreview" class="thermal-receipt"></div>
+          </div>
+
+          <div class="receipt-actions">
+            <button class="secondary-btn" onclick="copyActiveReceiptText()">
+              Copy Text
+            </button>
+            <button class="secondary-btn" onclick="printActiveReceipt()">
+              Print
+            </button>
+            <button class="primary-btn" onclick="closeSuccessModal()">
+              Transaksi Baru
+            </button>
+          </div>
+
+          <p class="small-note">
+            Untuk printer Bluetooth Android seperti Panda PRJ-58D, struk text ini nanti bisa diteruskan ke RAWBT / Android bridge.
+          </p>
+        </div>
+      </div>
+
+      <!-- PRINT AREA -->
+      <div id="printArea" class="print-area"></div>
+
+    <?!= include('Script'); ?>
+  </body>
+</html>
