@@ -217,6 +217,14 @@
                   </div>
                 </div>
 
+                <!-- THERAPIST SELECTOR (desktop) -->
+                <div class="form-group compact" id="posTherapistWrapper">
+                  <label>💆 Terapis yang Handle</label>
+                  <select id="posTherapistSelect" class="select-input" onchange="setPosTherapist(this.value)">
+                    <option value="">-- Tidak ada --</option>
+                  </select>
+                </div>
+
                 <button class="checkout-btn" onclick="handleCheckout()">
                   Checkout
                 </button>
@@ -939,6 +947,14 @@
               <span>Kembalian</span>
               <strong id="mobileSummaryChange">Rp 0</strong>
             </div>
+          </div>
+
+          <!-- THERAPIST SELECTOR (mobile) -->
+          <div class="form-group compact" id="mobilePosTherapistWrapper">
+            <label>💆 Terapis yang Handle</label>
+            <select id="mobilePosTherapistSelect" class="select-input" onchange="setPosTherapist(this.value)">
+              <option value="">-- Tidak ada --</option>
+            </select>
           </div>
 
           <button class="checkout-btn" onclick="handleCheckout()">

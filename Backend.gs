@@ -39,13 +39,15 @@ function getInitialData() {
   try {
     const config = getConfig();
     const menus = getMenus();
+    const therapists = getTherapists({ activeOnly: true });
 
     return {
       success: true,
       message: 'Initial data berhasil dimuat.',
       data: {
         config: config.data,
-        menus: menus.data
+        menus: menus.data,
+        therapists: therapists.data   // hanya terapis aktif, tanpa passcode
       }
     };
   } catch (error) {

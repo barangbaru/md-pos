@@ -28,6 +28,7 @@
     therapistUnlocked: false,
     superadminUnlocked: false,
     therapistFormMode: 'add', // 'add' or 'edit'
+    selectedTherapistId: '',  // terapis yang dipilih di POS kasir
   };
 
   document.addEventListener('DOMContentLoaded', initApp);
@@ -193,11 +194,17 @@
         state.menus = (res.data.menus && res.data.menus.menus) || [];
         state.categories = (res.data.menus && res.data.menus.categories) || [];
 
+        // Muat daftar terapis aktif untuk dropdown POS kasir
+        if (res.data.therapists && res.data.therapists.therapists) {
+          state.therapists = res.data.therapists.therapists;
+        }
+
         syncBrand();
         renderCategoryFilter();
         renderMenus();
         renderCart();
         updateSummary();
+        populatePosTherapistDropdowns();
 
         showToast('Data berhasil dimuat.');
       })
@@ -715,6 +722,44 @@
   }
 
   /* =====================================================
+     THERAPIST DROPDOWN — POS KASIR
+  ===================================================== */
+
+  /**
+   * Isi kedua dropdown terapis (desktop + mobile) dari state.therapists.
+   * Dipanggil setelah refreshInitialData atau loadTherapistData.
+   */
+  function populatePosTherapistDropdowns() {
+    const activeTherapists = (state.therapists || []).filter(function(t) { return t.active; });
+    const emptyOption = '<option value="">-- Tidak ada --</option>';
+    const options = emptyOption + activeTherapists.map(function(t) {
+      return '<option value="' + escapeAttr(t.therapistId) + '">' + escapeHtml(t.therapistName) + '</option>';
+    }).join('');
+
+    var desktop = document.getElementById('posTherapistSelect');
+    var mobile  = document.getElementById('mobilePosTherapistSelect');
+    if (desktop) { desktop.innerHTML = options; desktop.value = state.selectedTherapistId || ''; }
+    if (mobile)  { mobile.innerHTML  = options; mobile.value  = state.selectedTherapistId || ''; }
+  }
+
+  /**
+   * Sinkronisasi pilihan terapis antara desktop dan mobile,
+   * dan simpan ke state.
+   */
+  function setPosTherapist(therapistId) {
+    state.selectedTherapistId = therapistId || '';
+    var desktop = document.getElementById('posTherapistSelect');
+    var mobile  = document.getElementById('mobilePosTherapistSelect');
+    if (desktop) desktop.value = state.selectedTherapistId;
+    if (mobile)  mobile.value  = state.selectedTherapistId;
+  }
+
+  /** Reset pilihan terapis setelah checkout selesai. */
+  function resetPosTherapistDropdown() {
+    setPosTherapist('');
+  }
+
+  /* =====================================================
      CHECKOUT
   ===================================================== */
 
@@ -740,7 +785,8 @@
         menuId: item.menuId,
         qty: item.qty
       };
-    })
+    }),
+    therapistId: state.selectedTherapistId || ''   // terapis yang handle transaksi ini
   };
 
   if (state.paymentMethod === 'QRIS' || state.paymentMethod === 'Transfer') {
@@ -1733,6 +1779,7 @@ function loadTherapistData() {
       state.therapists = res.data.therapists || [];
       renderTherapistMasterTable();
       populateTherapistDropdown();
+      populatePosTherapistDropdowns(); // sync dropdown POS kasir
       loadTherapistPoints();
     })
     .withFailureHandler(function (err) {
@@ -2770,6 +2817,9 @@ function confirmNonCashPayment() {
 function submitCheckout(payload) {
   setLoading(true, 'Memproses checkout...');
 
+  // Snapshot cart sebelum di-clear, untuk keperluan catatan point terapis
+  var cartSnapshot = (state.cart || []).map(function(item) { return Object.assign({}, item); });
+
   google.script.run
     .withSuccessHandler(function (res) {
       setLoading(false);
@@ -2797,6 +2847,36 @@ function submitCheckout(payload) {
       renderCart();
       updateSummary();
       closeMobileCart();
+
+      // ── AUTO SAVE POINT TERAPIS ──
+      var therapistId = payload.therapistId || '';
+      if (therapistId) {
+        var serviceNames = cartSnapshot.map(function(i) { return i.menuName; }).join(', ') || 'Layanan';
+        var txTotal = (res.data.receipt && res.data.receipt.totals && res.data.receipt.totals.roundedTotal) || 0;
+        var txId    = res.data.transactionId || '';
+
+        google.script.run
+          .withSuccessHandler(function(ptRes) {
+            if (!ptRes.success) {
+              console.warn('Gagal simpan point terapis:', ptRes.message);
+            }
+          })
+          .withFailureHandler(function(ptErr) {
+            console.error('Error simpan point terapis:', getErrorMessage(ptErr));
+          })
+          .saveTherapistPoint({
+            cashierName  : state.cashierName,
+            therapistId  : therapistId,
+            serviceName  : serviceNames,
+            qty          : 1,
+            pointPerUnit : txTotal,
+            amount       : txTotal,
+            notes        : 'TX: ' + txId
+          });
+      }
+
+      // Reset dropdown pilihan terapis
+      resetPosTherapistDropdown();
 
       showSuccessModal(res.data.transactionId);
     })
