@@ -291,8 +291,11 @@
                     <small class="field-help">Jenis otomatis mengikuti kategori.</small>
                   </div>
                   <div class="form-group" id="personalCashierWrapper" style="display:none;">
-                    <label>Nama Kasir Penerima</label>
-                    <input id="expensePersonalCashierInput" type="text" placeholder="Otomatis dari nama kasir login" readonly />
+                    <label>Nama Terapis Penerima</label>
+                    <select id="expensePersonalCashierInput" class="select-input">
+                      <option value="">-- Pilih Terapis --</option>
+                    </select>
+                    <small class="field-help">Kasbon/fee dipotong dari bagi hasil terapis di Konsolidasi.</small>
                   </div>
                   <div class="form-group">
                     <label>Kategori</label>
@@ -322,7 +325,7 @@
               <div class="section-card table-card">
                 <div class="table-wrapper">
                   <table class="data-table">
-                    <thead><tr><th>Waktu</th><th>Input Oleh</th><th>Jenis</th><th>Kasir Penerima</th><th>Kategori</th><th>Keterangan</th><th>Nilai</th></tr></thead>
+                    <thead><tr><th>Waktu</th><th>Input Oleh</th><th>Jenis</th><th>Penerima (Terapis)</th><th>Kategori</th><th>Keterangan</th><th>Nilai</th></tr></thead>
                     <tbody id="pengeluaranTableBody"></tbody>
                   </table>
                 </div>
@@ -336,7 +339,7 @@
                 <div class="expense-filter-grid">
                   <div class="form-group"><label>Dari Tanggal</label><input id="expenseFilterStartDate" type="date" onchange="renderPengeluaranTable()" /></div>
                   <div class="form-group"><label>Sampai Tanggal</label><input id="expenseFilterEndDate" type="date" onchange="renderPengeluaranTable()" /></div>
-                  <div class="form-group"><label>Jenis</label><select id="expenseFilterType" class="select-input" onchange="renderPengeluaranTable()"><option value="All">Semua Jenis</option><option value="Sharing">Operasional</option><option value="Personal">Pribadi Kasir / Kasbon / Fee</option></select></div>
+                  <div class="form-group"><label>Jenis</label><select id="expenseFilterType" class="select-input" onchange="renderPengeluaranTable()"><option value="All">Semua Jenis</option><option value="Sharing">Operasional</option><option value="Therapist">Kasbon Terapis</option><option value="Personal">Pribadi Kasir</option></select></div>
                   <div class="form-group"><label>Kategori</label><select id="expenseFilterCategory" class="select-input" onchange="renderPengeluaranTable()"><option value="All">Semua Kategori</option></select></div>
                   <div class="form-group"><label>Kasir / Penerima</label><input id="expenseFilterCashier" type="text" placeholder="Cari nama kasir" oninput="renderPengeluaranTable()" /></div>
                   <div class="form-group"><label>Cari Keterangan</label><input id="expenseFilterSearch" type="text" placeholder="Cari keterangan" oninput="renderPengeluaranTable()" /></div>

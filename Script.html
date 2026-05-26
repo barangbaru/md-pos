@@ -1147,10 +1147,17 @@ function getExpenseTypeByCategory(category) {
 
 function normalizeExpenseItem(item) {
   const copy = Object.assign({}, item || {});
-  const type = getExpenseTypeByCategory(copy.Category);
+  const savedType = String(copy.Expense_Type || '').trim();
+  let type;
+  if (savedType === 'Therapist') {
+    type = 'Therapist'; // hormati kasbon terapis yang sudah tersimpan
+  } else {
+    type = getExpenseTypeByCategory(copy.Category);
+  }
   copy.Expense_Type = type;
   if (type === 'Personal' && !copy.Personal_Cashier) copy.Personal_Cashier = copy.Cashier_Name || state.cashierName || '';
   if (type === 'Sharing') copy.Personal_Cashier = '';
+  // Therapist: Personal_Cashier = nama terapis, biarkan apa adanya
   return copy;
 }
 
@@ -1164,8 +1171,9 @@ function handleExpenseCategoryChange() {
   const category = getInputValue('expenseCategoryInput');
   const type = getExpenseTypeByCategory(category);
   setInputValue('expenseTypeInput', type);
-  const input = document.getElementById('expensePersonalCashierInput');
-  if (input) input.value = type === 'Personal' ? (state.cashierName || '') : '';
+  if (type === 'Personal') {
+    populateExpenseTherapistDropdown();
+  }
   handleExpenseTypeChange();
 }
 
@@ -1174,9 +1182,24 @@ function handleExpenseTypeChange() {
   const wrapper = document.getElementById('personalCashierWrapper');
   if (wrapper) wrapper.style.display = type === 'Personal' ? '' : 'none';
   if (type === 'Personal') {
-    const input = document.getElementById('expensePersonalCashierInput');
-    if (input && !input.value) input.value = state.cashierName || '';
+    populateExpenseTherapistDropdown();
   }
+}
+
+/**
+ * Isi dropdown "Nama Terapis Penerima" pada form pengeluaran (kasbon/fee)
+ * dengan daftar nama terapis aktif. Value = nama terapis (untuk link konsolidasi).
+ */
+function populateExpenseTherapistDropdown() {
+  const sel = document.getElementById('expensePersonalCashierInput');
+  if (!sel || sel.tagName !== 'SELECT') return;
+  const current = sel.value;
+  const active = (state.therapists || []).filter(function (t) { return t.active; });
+  sel.innerHTML = '<option value="">-- Pilih Terapis --</option>' +
+    active.map(function (t) {
+      return '<option value="' + escapeAttr(t.therapistName) + '">' + escapeHtml(t.therapistName) + '</option>';
+    }).join('');
+  if (current) sel.value = current;
 }
 
 function handleExpenseAmountInput(inputEl) {
@@ -1187,14 +1210,32 @@ function handleExpenseAmountInput(inputEl) {
 function saveExpense() {
   const category = getInputValue('expenseCategoryInput');
   const expenseType = getExpenseTypeByCategory(category);
-  const personalCashier = expenseType === 'Personal' ? (state.cashierName || getInputValue('expensePersonalCashierInput')) : '';
+  // Untuk kasbon/fee (Personal), penerima diambil dari dropdown nama terapis
+  const therapistName = expenseType === 'Personal' ? getInputValue('expensePersonalCashierInput') : '';
   const description = getInputValue('expenseDescriptionInput');
   const amount = parseRupiah(getInputValue('expenseAmountInput'));
   if (!category) { showToast('Kategori pengeluaran wajib dipilih.', 'error'); return; }
-  if (expenseType === 'Personal' && !personalCashier) { showToast('Nama kasir penerima wajib ada dari login.', 'error'); return; }
+  if (expenseType === 'Personal' && !therapistName) { showToast('Pilih nama terapis penerima kasbon/fee terlebih dahulu.', 'error'); return; }
   if (!description) { showToast('Keterangan pengeluaran wajib diisi.', 'error'); return; }
   if (amount <= 0) { showToast('Nilai pengeluaran harus lebih dari 0.', 'error'); return; }
   setLoading(true, 'Menyimpan pengeluaran...');
+
+  // Kasbon/fee untuk terapis dikirim sebagai targetType 'therapist' agar
+  // terhubung ke master THERAPISTS dan dipotong di Konsolidasi.
+  const payload = {
+    cashierName: state.cashierName,
+    category: category,
+    description: description,
+    amount: amount
+  };
+  if (expenseType === 'Personal') {
+    payload.targetType = 'therapist';
+    payload.therapistName = therapistName;
+    payload.personalCashier = therapistName;
+  } else {
+    payload.expenseType = 'Sharing';
+  }
+
   google.script.run
     .withSuccessHandler(function (res) {
       setLoading(false);
@@ -1205,7 +1246,7 @@ function saveExpense() {
       if (state.dashboardUnlocked || sessionStorage.getItem('pos_dashboard_unlocked') === 'true') loadDashboardData();
     })
     .withFailureHandler(function (err) { setLoading(false); showToast(getErrorMessage(err), 'error'); })
-    .addExpense({ cashierName: state.cashierName, expenseType: expenseType, personalCashier: personalCashier, category: category, description: description, amount: amount });
+    .addExpense(payload);
 }
 
 function clearExpenseForm() {
@@ -1220,6 +1261,22 @@ function clearExpenseForm() {
 function loadPengeluaranData() {
   const tbody = document.getElementById('pengeluaranTableBody');
   if (tbody) tbody.innerHTML = '<tr><td colspan="7">Memuat data...</td></tr>';
+
+  // Pastikan daftar terapis tersedia untuk dropdown penerima kasbon
+  if (!state.therapists || state.therapists.length === 0) {
+    google.script.run
+      .withSuccessHandler(function (res) {
+        if (res.success) {
+          state.therapists = (res.data && res.data.therapists) || [];
+          populateExpenseTherapistDropdown();
+        }
+      })
+      .withFailureHandler(function () {})
+      .getTherapists({ activeOnly: true });
+  } else {
+    populateExpenseTherapistDropdown();
+  }
+
   google.script.run
     .withSuccessHandler(function (res) {
       if (!res.success) { showToast(res.message || 'Gagal memuat pengeluaran.', 'error'); return; }
@@ -1266,7 +1323,7 @@ function getFilteredExpenses() {
   const sortBy = getInputValue('expenseSortBy') || 'newest';
   let rows = (state.expenses || []).map(normalizeExpenseItem).filter(function (item) {
     const itemDate = String(item.Date || '');
-    const itemType = getExpenseTypeByCategory(item.Category);
+    const itemType = item.Expense_Type || getExpenseTypeByCategory(item.Category);
     const itemCategory = String(item.Category || '');
     const inputBy = String(item.Cashier_Name || '').toLowerCase();
     const personalCashier = String(item.Personal_Cashier || '').toLowerCase();
@@ -1300,8 +1357,10 @@ function renderPengeluaranTable() {
   updateExpenseFilterSummary(expenses);
   if (expenses.length === 0) { tbody.innerHTML = '<tr><td colspan="7">Tidak ada pengeluaran sesuai filter.</td></tr>'; return; }
   tbody.innerHTML = expenses.map(function(item){
-    const type = getExpenseTypeByCategory(item.Category);
-    const typeLabel = type === 'Personal' ? 'Pribadi Kasir' : 'Operasional';
+    const type = item.Expense_Type || getExpenseTypeByCategory(item.Category);
+    let typeLabel = 'Operasional';
+    if (type === 'Therapist') typeLabel = 'Kasbon Terapis';
+    else if (type === 'Personal') typeLabel = 'Pribadi Kasir';
     return `<tr><td><strong>${escapeHtml(item.Date || '-')}</strong><br /><small>${escapeHtml(item.Time || '-')}</small></td><td>${escapeHtml(item.Cashier_Name || '-')}</td><td>${escapeHtml(typeLabel)}</td><td>${escapeHtml(item.Personal_Cashier || '-')}</td><td>${escapeHtml(item.Category || '-')}</td><td>${escapeHtml(item.Description || '-')}</td><td><strong>${formatRupiah(getExpenseAmountValue(item))}</strong></td></tr>`;
   }).join('');
 }
@@ -1309,8 +1368,8 @@ function renderPengeluaranTable() {
 function updateExpenseFilterSummary(expenses) {
   const rows = expenses || [];
   const total = rows.reduce((sum,item)=>sum+getExpenseAmountValue(item),0);
-  const sharingTotal = rows.filter(item => getExpenseTypeByCategory(item.Category) === 'Sharing').reduce((sum,item)=>sum+getExpenseAmountValue(item),0);
-  const personalTotal = rows.filter(item => getExpenseTypeByCategory(item.Category) === 'Personal').reduce((sum,item)=>sum+getExpenseAmountValue(item),0);
+  const sharingTotal = rows.filter(function(item){ return (item.Expense_Type || getExpenseTypeByCategory(item.Category)) === 'Sharing'; }).reduce((sum,item)=>sum+getExpenseAmountValue(item),0);
+  const personalTotal = rows.filter(function(item){ const t = item.Expense_Type || getExpenseTypeByCategory(item.Category); return t === 'Personal' || t === 'Therapist'; }).reduce((sum,item)=>sum+getExpenseAmountValue(item),0);
   setText('expenseFilteredTotal', formatRupiah(total));
   setText('expenseFilteredCount', rows.length.toLocaleString('id-ID'));
   setText('expenseSharingTotal', formatRupiah(sharingTotal));

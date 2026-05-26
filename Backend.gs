@@ -726,7 +726,7 @@ function getDashboardData(filter) {
     const rangeGrossProfit = POS_sumItemGrossProfit_(rangeItems, menuCostMap);
     const rangeExpenseTotal = POS_sumExpenses_(rangeExpenses);
     const rangeSharingExpenseTotal = POS_sumExpensesByType_(rangeExpenses, 'Sharing');
-    const rangePersonalExpenseTotal = POS_sumExpensesByType_(rangeExpenses, 'Personal');
+    const rangePersonalExpenseTotal = POS_sumExpensesByType_(rangeExpenses, 'Personal') + POS_sumExpensesByType_(rangeExpenses, 'Therapist');
     const rangeNetProfit = rangeGrossProfit - rangeExpenseTotal;
     const rangeTransactions = rangeSales.length;
     const topCashierRange = POS_calculateTopCashiers_(rangeSales, 1)[0] || { cashierName: '-', transactions: 0, revenue: 0 };
@@ -775,8 +775,14 @@ function getDashboardData(filter) {
 
     const paymentSummary = POS_calculatePaymentSummary_(rangeSales);
     const topCashiers = POS_calculateTopCashiers_(rangeSales, 5);
-    const sharingExpenses = POS_groupExpensesByCategory_(rangeExpenses.filter(row => POS_toString_(row.Expense_Type) !== 'Personal'));
-    const personalExpenses = POS_groupPersonalExpenses_(rangeExpenses.filter(row => POS_toString_(row.Expense_Type) === 'Personal'));
+    const sharingExpenses = POS_groupExpensesByCategory_(rangeExpenses.filter(row => {
+      const t = POS_toString_(row.Expense_Type);
+      return t !== 'Personal' && t !== 'Therapist';
+    }));
+    const personalExpenses = POS_groupPersonalExpenses_(rangeExpenses.filter(row => {
+      const t = POS_toString_(row.Expense_Type);
+      return t === 'Personal' || t === 'Therapist';
+    }));
 
     return {
       success: true,
