@@ -704,6 +704,7 @@ function getDashboardData(filter) {
     const sales = POS_readObjects_(POS_SHEET.SALES);
     const saleItems = POS_readObjects_(POS_SHEET.SALE_ITEMS);
     const expenses = POS_readObjects_(POS_SHEET.EXPENSES).map(POS_normalizeExpenseRow_);
+    const allTherapistPoints = POS_readObjects_(POS_SHEET.THERAPIST_POINTS).filter(r => POS_toString_(r.Point_ID));
     const menuCostMap = POS_getMenuCostMap_();
     const today = POS_todayString_();
 
@@ -729,7 +730,8 @@ function getDashboardData(filter) {
     const rangePersonalExpenseTotal = POS_sumExpensesByType_(rangeExpenses, 'Personal') + POS_sumExpensesByType_(rangeExpenses, 'Therapist');
     const rangeNetProfit = rangeGrossProfit - rangeExpenseTotal;
     const rangeTransactions = rangeSales.length;
-    const topCashierRange = POS_calculateTopCashiers_(rangeSales, 1)[0] || { cashierName: '-', transactions: 0, revenue: 0 };
+    const rangeTherapistPoints = allTherapistPoints.filter(r => POS_isDateInRange_(r.Date, range.startDate, range.endDate));
+    const topTherapistRange = POS_calculateTopTherapists_(rangeTherapistPoints, 1)[0] || { therapistId: '-', therapistName: '-', totalPoint: 0, totalAmount: 0, count: 0 };
 
     // Breakdown harian dalam range
     const rangeDailyBreakdown = rangeDates.map(date => {
@@ -774,7 +776,7 @@ function getDashboardData(filter) {
     });
 
     const paymentSummary = POS_calculatePaymentSummary_(rangeSales);
-    const topCashiers = POS_calculateTopCashiers_(rangeSales, 5);
+    const topTherapists = POS_calculateTopTherapists_(rangeTherapistPoints, 5);
     const sharingExpenses = POS_groupExpensesByCategory_(rangeExpenses.filter(row => {
       const t = POS_toString_(row.Expense_Type);
       return t !== 'Personal' && t !== 'Therapist';
@@ -802,7 +804,7 @@ function getDashboardData(filter) {
           personalExpensesToday: rangePersonalExpenseTotal,
           netProfitToday: rangeNetProfit,
           transactionsToday: rangeTransactions,
-          topCashierToday: topCashierRange,
+          topTherapistToday: topTherapistRange,
           // Field "monthly..." sekarang berisi total range (sama dengan range...).
           // Dipertahankan supaya tidak break UI lama bila ada referensi.
           monthlyRevenue: rangeSummary.revenue,
@@ -813,7 +815,7 @@ function getDashboardData(filter) {
         },
         last7Revenue: last7Revenue,
         paymentSummary: paymentSummary,
-        topCashiers: topCashiers,
+        topTherapists: topTherapists,
         // monthlySales / monthlySummary sekarang berisi breakdown harian dari range
         monthlySales: rangeDailyBreakdown,
         monthlySummary: rangeSummary,
@@ -997,6 +999,7 @@ function POS_sumItemGrossProfit_(items, menuCostMap) { return items.reduce((sum,
 function POS_sumExpenses_(expenses) { return expenses.reduce((sum, row) => sum + POS_toNumber_(row.Amount), 0); }
 function POS_sumExpensesByType_(expenses, type) { return expenses.map(POS_normalizeExpenseRow_).filter(row => POS_toString_(row.Expense_Type || 'Sharing') === type).reduce((sum, row) => sum + POS_toNumber_(row.Amount), 0); }
 function POS_calculateTopCashiers_(sales, limit) { const map={}; sales.forEach(row => { const cashierName=POS_toString_(row.Cashier_Name) || '-'; const amount=POS_toNumber_(row.Rounded_Total || row.Grand_Total); if(!map[cashierName]) map[cashierName]={cashierName:cashierName,transactions:0,revenue:0}; map[cashierName].transactions += 1; map[cashierName].revenue += amount; }); return Object.values(map).sort((a,b)=> b.revenue !== a.revenue ? b.revenue-a.revenue : b.transactions-a.transactions).slice(0, limit || 5); }
+function POS_calculateTopTherapists_(pointRows, limit) { const map={}; pointRows.forEach(row => { const id=POS_toString_(row.Therapist_ID) || '-'; const name=POS_toString_(row.Therapist_Name) || '-'; if(!map[id]) map[id]={therapistId:id,therapistName:name,totalPoint:0,totalAmount:0,count:0}; map[id].totalPoint += POS_toNumber_(row.Total_Point); map[id].totalAmount += POS_toNumber_(row.Amount); map[id].count += 1; }); return Object.values(map).sort((a,b)=> b.totalPoint !== a.totalPoint ? b.totalPoint-a.totalPoint : b.totalAmount-a.totalAmount).slice(0, limit || 5); }
 function POS_groupExpensesByCategory_(expenses) { const map={}; expenses.forEach(row => { const category=POS_toString_(row.Category) || 'Lainnya'; if(!map[category]) map[category]={category:category,amount:0,count:0}; map[category].amount += POS_toNumber_(row.Amount); map[category].count += 1; }); return Object.values(map).sort((a,b)=>b.amount-a.amount); }
 function POS_groupPersonalExpenses_(expenses) { const map={}; expenses.forEach(row => { const cashier=POS_toString_(row.Personal_Cashier) || POS_toString_(row.Cashier_Name) || '-'; const category=POS_toString_(row.Category) || 'Kasbon/Fee'; const key=cashier+'|'+category; if(!map[key]) map[key]={cashierName:cashier,category:category,amount:0,count:0}; map[key].amount += POS_toNumber_(row.Amount); map[key].count += 1; }); return Object.values(map).sort((a,b)=>b.amount-a.amount); }
 

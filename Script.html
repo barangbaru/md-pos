@@ -1683,12 +1683,12 @@ function renderDashboard() {
   setText('cardAvgPerDaySubtitle', 'Omzet / ' + days + ' hari');
 
   setText('cardExpenseBreakdown', 'Operasional ' + formatRupiah(cards.sharingExpensesToday || 0) + ' / Pribadi ' + formatRupiah(cards.personalExpensesToday || 0));
-  const topCashier = cards.topCashierToday || {};
-  setText('cardTopCashier', topCashier.cashierName || '-');
-  setText('cardTopCashierRevenue', formatRupiah(topCashier.revenue || 0) + ' / ' + Number(topCashier.transactions || 0) + ' trx');
+  const topTherapist = cards.topTherapistToday || {};
+  setText('cardTopTherapist', topTherapist.therapistName || '-');
+  setText('cardTopTherapistPoint', Number(topTherapist.totalPoint || 0) + ' pt / ' + formatRupiah(topTherapist.totalAmount || 0));
   renderRevenueChart(data.last7Revenue || []);
   renderPaymentSummary(data.paymentSummary || {});
-  renderTopCashiers(data.topCashiers || []);
+  renderTopTherapists(data.topTherapists || []);
   renderSharingExpenses(data.sharingExpenses || []);
   renderPersonalExpenses(data.personalExpenses || []);
   renderMonthlySales(data.monthlySales || [], data.monthlySummary || {});
@@ -1762,11 +1762,11 @@ function renderTopProducts(items) {
     .join('');
 }
 
-function renderTopCashiers(items) {
-  const wrapper = document.getElementById('topCashiersList');
+function renderTopTherapists(items) {
+  const wrapper = document.getElementById('topTherapistsList');
   if (!wrapper) return;
   if (!items || items.length === 0) { wrapper.innerHTML = '<div class="report-row"><span>Belum ada data</span><strong>-</strong></div>'; return; }
-  wrapper.innerHTML = items.map((item,index)=>`<div class="report-row"><span>${index+1}. ${escapeHtml(item.cashierName)}</span><strong>${formatRupiah(item.revenue)}<small>${item.transactions} trx</small></strong></div>`).join('');
+  wrapper.innerHTML = items.map((item,index)=>`<div class="report-row"><span>${index+1}. ${escapeHtml(item.therapistName)}</span><strong>${item.totalPoint} pt<small>${formatRupiah(item.totalAmount)}</small></strong></div>`).join('');
 }
 function renderSharingExpenses(items) {
   const wrapper = document.getElementById('sharingExpensesList');
