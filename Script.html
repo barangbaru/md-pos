@@ -1138,7 +1138,7 @@ function refreshAfterStockUpdate() {
 
 function isPersonalExpenseCategory(category) {
   const text = String(category || '').toLowerCase().trim();
-  return text.includes('kasbon') || text.includes('fee');
+  return text === 'kasbon';
 }
 
 function getExpenseTypeByCategory(category) {
