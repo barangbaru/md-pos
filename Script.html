@@ -2327,6 +2327,10 @@ function fillConfigForm() {
   setInputValue('configLowStockLimit', state.config.lowStockLimit || 10);
   setInputValue('configTherapistSharePercent', state.config.therapistSharePercent || 50);
   setInputValue('configReceiptFooter', state.config.receiptFooter || '');
+  // Notifikasi
+  setInputValue('configReportEmail', state.config.reportEmail || '');
+  setInputValue('configTelegramBotToken', state.config.telegramBotToken || '');
+  setInputValue('configTelegramChatId', state.config.telegramChatId || '');
 
   setInputValue('configCashierPasscode', '');
   setInputValue('configDashboardPasscode', '');
@@ -2358,7 +2362,11 @@ function saveConfig() {
     dashboardPasscode: getInputValue('configDashboardPasscode'),
     newConfigPasscode: getInputValue('configNewConfigPasscode'),
     therapistPasscode: getInputValue('configTherapistPasscode'),
-    superadminPasscode: getInputValue('configSuperadminPasscode')
+    superadminPasscode: getInputValue('configSuperadminPasscode'),
+    // Notifikasi
+    reportEmail: getInputValue('configReportEmail'),
+    telegramBotToken: getInputValue('configTelegramBotToken'),
+    telegramChatId: getInputValue('configTelegramChatId')
   };
 
   setLoading(true, 'Menyimpan config...');
@@ -2387,6 +2395,65 @@ function saveConfig() {
       showToast(getErrorMessage(err), 'error');
     })
     .updateConfig(payload);
+}
+
+/* =====================================================
+   SEND REPORT (Email & Telegram)
+===================================================== */
+
+function openSendReportModal() {
+  const errorEl = document.getElementById('sendReportError');
+  if (errorEl) errorEl.textContent = '';
+  document.getElementById('sendReportModal').classList.remove('hidden');
+}
+
+function closeSendReportModal() {
+  document.getElementById('sendReportModal').classList.add('hidden');
+}
+
+function submitSendReport() {
+  const emailChecked = document.getElementById('reportChannelEmail').checked;
+  const telegramChecked = document.getElementById('reportChannelTelegram').checked;
+  const errorEl = document.getElementById('sendReportError');
+
+  errorEl.textContent = '';
+
+  if (!emailChecked && !telegramChecked) {
+    errorEl.textContent = 'Pilih minimal satu saluran pengiriman.';
+    return;
+  }
+
+  const channels = [];
+  if (emailChecked) channels.push('email');
+  if (telegramChecked) channels.push('telegram');
+
+  const filter = getDashboardFilterValue();
+
+  closeSendReportModal();
+  setLoading(true, 'Mengirim laporan...');
+
+  google.script.run
+    .withSuccessHandler(function(res) {
+      setLoading(false);
+
+      // Tampilkan hasil per channel
+      const results = (res && res.data) || {};
+      const msgs = [];
+      if (results.email) {
+        msgs.push('📧 Email: ' + (results.email.success ? '✅ ' : '❌ ') + results.email.message);
+      }
+      if (results.telegram) {
+        msgs.push('✈️ Telegram: ' + (results.telegram.success ? '✅ ' : '❌ ') + results.telegram.message);
+      }
+
+      const allOk = Object.values(results).every(function(r) { return r.success; });
+      showToast(msgs.join(' | '), allOk ? 'success' : 'error');
+    })
+    .withFailureHandler(function(err) {
+      setLoading(false);
+      showToast('Gagal kirim laporan: ' + getErrorMessage(err), 'error');
+    })
+    .sendReport({ filter: filter, channels: channels });
 }
 
 /* =====================================================

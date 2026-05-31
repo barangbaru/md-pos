@@ -287,7 +287,12 @@ function getConfig() {
       bankAccountName: POS_toString_(config.BANK_ACCOUNT_NAME || ''),
       transferNote: POS_toString_(config.TRANSFER_NOTE || ''),
 
-      therapistSharePercent: POS_toNumber_(config.THERAPIST_SHARE_PERCENT || 50)
+      therapistSharePercent: POS_toNumber_(config.THERAPIST_SHARE_PERCENT || 50),
+
+      // Notifikasi
+      reportEmail: POS_toString_(config.REPORT_EMAIL || ''),
+      telegramBotToken: POS_toString_(config.TELEGRAM_BOT_TOKEN || ''),
+      telegramChatId: POS_toString_(config.TELEGRAM_CHAT_ID || '')
     };
 
     return {
@@ -388,6 +393,15 @@ function updateConfig(payload) {
         throw new Error('Persentase bagi hasil terapis harus 0 - 100.');
       }
       updates.THERAPIST_SHARE_PERCENT = sharePct;
+    }
+
+    // Notifikasi
+    if (payload.reportEmail !== undefined) updates.REPORT_EMAIL = POS_toString_(payload.reportEmail).trim();
+    if (payload.telegramBotToken !== undefined && POS_toString_(payload.telegramBotToken).trim()) {
+      updates.TELEGRAM_BOT_TOKEN = POS_toString_(payload.telegramBotToken).trim();
+    }
+    if (payload.telegramChatId !== undefined && POS_toString_(payload.telegramChatId).trim()) {
+      updates.TELEGRAM_CHAT_ID = POS_toString_(payload.telegramChatId).trim();
     }
 
     POS_updateConfigValues_(updates);
@@ -1196,6 +1210,242 @@ function POS_errorResponse_(error) {
     message: message,
     data: null
   };
+}
+
+/* =====================================================
+   SEND REPORT (Email & Telegram)
+===================================================== */
+
+/**
+ * Kirim laporan harian ke Email dan/atau Telegram.
+ * payload: { filter: { startDate, endDate }, channels: ['email','telegram'] }
+ */
+function sendReport(payload) {
+  try {
+    const filter = (payload && payload.filter) || {};
+    const channels = (payload && payload.channels) || ['email', 'telegram'];
+
+    const config = POS_getConfigMap_();
+    const storeName = POS_toString_(config.STORE_NAME || 'POS System');
+    const reportEmail = POS_toString_(config.REPORT_EMAIL || '').trim();
+    const telegramToken = POS_toString_(config.TELEGRAM_BOT_TOKEN || '').trim();
+    const telegramChatId = POS_toString_(config.TELEGRAM_CHAT_ID || '').trim();
+
+    // Ambil data dashboard sesuai filter
+    const dashResult = getDashboardData(filter);
+    if (!dashResult.success) throw new Error('Gagal mengambil data: ' + dashResult.message);
+
+    const data = dashResult.data;
+    const cards = data.cards || {};
+    const range = data.range || {};
+    const summary = data.monthlySummary || {};
+
+    // ── Hitung nilai bagi hasil ───────────────────────────────────────────
+    const omzet = Number(cards.revenueToday || 0);
+    const operasional = Number(cards.sharingExpensesToday || 0);
+    const kasbon = Number(cards.personalExpensesToday || 0);
+    const labaTerapis = omzet / 2;
+    const sisaInvestor = (omzet / 2) - operasional;
+    const labaInvestor1 = sisaInvestor * 0.60;
+    const labaInvestor2 = sisaInvestor * 0.40;
+    const transaksi = Number(cards.transactionsToday || 0);
+
+    // Label range
+    const rangeLabel = range.startDate === range.endDate
+      ? range.startDate
+      : range.startDate + ' s/d ' + range.endDate;
+    const days = range.days || 1;
+
+    // ── Format pesan teks (untuk Telegram) ───────────────────────────────
+    const sep = '━━━━━━━━━━━━━━━━━━━━';
+    const lines = [
+      '📊 <b>LAPORAN ' + storeName.toUpperCase() + '</b>',
+      '📅 ' + rangeLabel + (days > 1 ? ' (' + days + ' hari)' : ''),
+      sep,
+      '💰 <b>Total Omzet</b>: ' + POS_formatRupiah_(omzet),
+      '🧾 <b>Transaksi</b>: ' + transaksi + ' transaksi',
+      sep,
+      '🏢 <b>Pengeluaran Operasional</b>: ' + POS_formatRupiah_(operasional),
+      '💳 <b>Total Kasbon</b>: ' + POS_formatRupiah_(kasbon),
+      sep,
+      '👩‍⚕️ <b>Laba Terapis (50%)</b>: ' + POS_formatRupiah_(labaTerapis),
+      sep,
+      '👤 <b>Laba Investor 1 (60%)</b>: ' + POS_formatRupiah_(labaInvestor1),
+      '   <i>60% × (omzet/2 - operasional)</i>',
+      '👤 <b>Laba Investor 2 (40%)</b>: ' + POS_formatRupiah_(labaInvestor2),
+      '   <i>40% × (omzet/2 - operasional)</i>',
+      sep,
+    ];
+
+    // Breakdown pembayaran
+    const payment = data.paymentSummary || {};
+    lines.push('💵 <b>Metode Pembayaran</b>:');
+    ['Cash', 'QRIS', 'Transfer'].forEach(function(m) {
+      if (payment[m]) lines.push('   ' + m + ': ' + POS_formatRupiah_(payment[m]));
+    });
+
+    // Top terapis
+    const topTherapists = data.topTherapists || [];
+    if (topTherapists.length > 0) {
+      lines.push(sep);
+      lines.push('🏆 <b>Top Peringkat Terapis</b>:');
+      topTherapists.forEach(function(t, i) {
+        lines.push('   ' + (i + 1) + '. ' + t.therapistName + ' — ' + t.totalPoint + ' pt (' + POS_formatRupiah_(t.totalAmount) + ')');
+      });
+    }
+
+    // Pengeluaran operasional
+    const sharingExp = data.sharingExpenses || [];
+    if (sharingExp.length > 0) {
+      lines.push(sep);
+      lines.push('🏢 <b>Detail Operasional</b>:');
+      sharingExp.forEach(function(e) {
+        lines.push('   • ' + e.category + ': ' + POS_formatRupiah_(e.amount));
+      });
+    }
+
+    // Kasbon
+    const personalExp = data.personalExpenses || [];
+    if (personalExp.length > 0) {
+      lines.push(sep);
+      lines.push('💳 <b>Detail Kasbon</b>:');
+      personalExp.forEach(function(e) {
+        lines.push('   • ' + e.cashierName + ': ' + POS_formatRupiah_(e.amount));
+      });
+    }
+
+    lines.push(sep);
+    lines.push('🕐 Dikirim: ' + POS_nowString_());
+
+    const telegramMessage = lines.join('\n');
+
+    // ── Format HTML untuk Email ───────────────────────────────────────────
+    const emailHtml = POS_buildReportEmailHtml_(storeName, rangeLabel, days, {
+      omzet, operasional, kasbon, labaTerapis, labaInvestor1, labaInvestor2,
+      transaksi, sisaInvestor, payment, topTherapists, sharingExp, personalExp
+    });
+
+    const emailSubject = '[' + storeName + '] Laporan ' + rangeLabel;
+
+    // ── Kirim ─────────────────────────────────────────────────────────────
+    const results = {};
+
+    if (channels.indexOf('email') !== -1) {
+      if (!reportEmail) {
+        results.email = { success: false, message: 'Email penerima belum dikonfigurasi di Config.' };
+      } else {
+        try {
+          MailApp.sendEmail({
+            to: reportEmail,
+            subject: emailSubject,
+            htmlBody: emailHtml
+          });
+          results.email = { success: true, message: 'Email terkirim ke ' + reportEmail };
+        } catch (e) {
+          results.email = { success: false, message: 'Gagal kirim email: ' + e.message };
+        }
+      }
+    }
+
+    if (channels.indexOf('telegram') !== -1) {
+      if (!telegramToken || !telegramChatId) {
+        results.telegram = { success: false, message: 'Token atau Chat ID Telegram belum dikonfigurasi.' };
+      } else {
+        try {
+          POS_sendTelegram_(telegramToken, telegramChatId, telegramMessage);
+          results.telegram = { success: true, message: 'Pesan Telegram terkirim.' };
+        } catch (e) {
+          results.telegram = { success: false, message: 'Gagal kirim Telegram: ' + e.message };
+        }
+      }
+    }
+
+    const allOk = Object.values(results).every(function(r) { return r.success; });
+    return {
+      success: allOk,
+      message: allOk ? 'Laporan berhasil dikirim.' : 'Sebagian laporan gagal dikirim.',
+      data: results
+    };
+  } catch (error) { return POS_errorResponse_(error); }
+}
+
+/** Kirim pesan teks ke Telegram via Bot API. */
+function POS_sendTelegram_(token, chatId, text) {
+  const url = 'https://api.telegram.org/bot' + token + '/sendMessage';
+  const response = UrlFetchApp.fetch(url, {
+    method: 'post',
+    contentType: 'application/json',
+    payload: JSON.stringify({
+      chat_id: chatId,
+      text: text,
+      parse_mode: 'HTML'
+    }),
+    muteHttpExceptions: true
+  });
+  const body = JSON.parse(response.getContentText());
+  if (!body.ok) throw new Error('Telegram API error: ' + (body.description || 'Unknown'));
+}
+
+/** Build HTML email laporan. */
+function POS_buildReportEmailHtml_(storeName, rangeLabel, days, d) {
+  function row(label, value, bold) {
+    return '<tr><td style="padding:6px 12px;color:#6b7280;">' + label + '</td>'
+      + '<td style="padding:6px 12px;text-align:right;' + (bold ? 'font-weight:700;' : '') + '">' + value + '</td></tr>';
+  }
+  function section(title) {
+    return '<tr><td colspan="2" style="padding:10px 12px 4px;font-weight:700;background:#f3f4f6;color:#374151;">' + title + '</td></tr>';
+  }
+
+  let html = '<div style="font-family:sans-serif;max-width:560px;margin:0 auto;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden;">';
+  html += '<div style="background:#1d4ed8;color:#fff;padding:20px 24px;">';
+  html += '<h2 style="margin:0;font-size:18px;">📊 Laporan ' + storeName + '</h2>';
+  html += '<p style="margin:4px 0 0;opacity:.85;">📅 ' + rangeLabel + (days > 1 ? ' (' + days + ' hari)' : '') + '</p></div>';
+  html += '<table style="width:100%;border-collapse:collapse;">';
+
+  html += section('📈 Ringkasan Utama');
+  html += row('Total Omzet', POS_formatRupiah_(d.omzet), true);
+  html += row('Total Transaksi', d.transaksi + ' trx', false);
+
+  html += section('💸 Pengeluaran');
+  html += row('Operasional', POS_formatRupiah_(d.operasional), false);
+  html += row('Kasbon Terapis', POS_formatRupiah_(d.kasbon), false);
+
+  html += section('🤝 Bagi Hasil');
+  html += row('Laba Terapis (50%)', POS_formatRupiah_(d.labaTerapis), true);
+  html += row('Sisa Investor (50% - Operasional)', POS_formatRupiah_(d.sisaInvestor), false);
+  html += row('Laba Investor 1 (60%)', POS_formatRupiah_(d.labaInvestor1), true);
+  html += row('Laba Investor 2 (40%)', POS_formatRupiah_(d.labaInvestor2), true);
+
+  html += section('💳 Metode Pembayaran');
+  ['Cash', 'QRIS', 'Transfer'].forEach(function(m) {
+    if (d.payment[m]) html += row(m, POS_formatRupiah_(d.payment[m]), false);
+  });
+
+  if (d.topTherapists && d.topTherapists.length > 0) {
+    html += section('🏆 Top Peringkat Terapis');
+    d.topTherapists.forEach(function(t, i) {
+      html += row((i+1) + '. ' + t.therapistName, t.totalPoint + ' pt (' + POS_formatRupiah_(t.totalAmount) + ')', false);
+    });
+  }
+
+  if (d.sharingExp && d.sharingExp.length > 0) {
+    html += section('🏢 Detail Operasional');
+    d.sharingExp.forEach(function(e) {
+      html += row(e.category, POS_formatRupiah_(e.amount), false);
+    });
+  }
+
+  if (d.personalExp && d.personalExp.length > 0) {
+    html += section('💳 Detail Kasbon');
+    d.personalExp.forEach(function(e) {
+      html += row(e.cashierName, POS_formatRupiah_(e.amount), false);
+    });
+  }
+
+  html += '</table>';
+  html += '<div style="padding:12px 24px;background:#f9fafb;color:#9ca3af;font-size:12px;">Dikirim otomatis oleh ' + storeName + ' POS · ' + POS_nowString_() + '</div>';
+  html += '</div>';
+  return html;
 }
 
 function testLogin() {

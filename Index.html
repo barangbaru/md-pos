@@ -541,6 +541,7 @@
                   <div class="date-filter-actions">
                     <button type="button" class="primary-btn" onclick="applyDashboardFilter()">Terapkan</button>
                     <button type="button" class="small-btn" onclick="resetDashboardFilter()">Reset</button>
+                    <button type="button" class="small-btn" onclick="openSendReportModal()" title="Kirim laporan ke Email / Telegram">📤 Kirim Laporan</button>
                   </div>
                 </div>
               </div>
@@ -826,6 +827,28 @@
                     <input id="configReceiptFooter" type="text" />
                   </div>
 
+                  <div class="form-group full-span" style="margin-top:8px;">
+                    <p class="eyebrow" style="margin-bottom:8px;">📤 Notifikasi Laporan</p>
+                  </div>
+
+                  <div class="form-group full-span">
+                    <label>Email Penerima Laporan</label>
+                    <input id="configReportEmail" type="email" placeholder="contoh@email.com" />
+                    <small class="field-help">Laporan harian akan dikirim ke alamat ini.</small>
+                  </div>
+
+                  <div class="form-group full-span">
+                    <label>Telegram Bot Token</label>
+                    <input id="configTelegramBotToken" type="text" placeholder="123456789:ABCdef..." />
+                    <small class="field-help">Token dari @BotFather. Kosongkan jika tidak digunakan.</small>
+                  </div>
+
+                  <div class="form-group">
+                    <label>Telegram Chat ID</label>
+                    <input id="configTelegramChatId" type="text" placeholder="-100123456789" />
+                    <small class="field-help">Chat ID grup atau pribadi. Gunakan @userinfobot untuk cek.</small>
+                  </div>
+
                   <div class="form-group full-span">
                     <label>Passcode Config Saat Ini</label>
                     <input id="configCurrentPasscode" type="password" placeholder="Wajib untuk menyimpan perubahan" />
@@ -984,6 +1007,34 @@
           <div class="modal-actions">
             <button class="secondary-btn" onclick="closeProtectedModal()">Batal</button>
             <button class="primary-btn" onclick="validateProtectedAccess()">Buka</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- SEND REPORT MODAL -->
+      <div id="sendReportModal" class="modal-overlay hidden">
+        <div class="protected-modal" style="max-width:420px;">
+          <div class="lock-icon">📤</div>
+          <h2>Kirim Laporan</h2>
+          <p style="color:var(--text-secondary);font-size:14px;margin-bottom:16px;">Pilih saluran pengiriman laporan dashboard sesuai filter aktif.</p>
+
+          <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px;text-align:left;">
+            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px 14px;border:1px solid var(--border);border-radius:8px;">
+              <input type="checkbox" id="reportChannelEmail" checked style="width:16px;height:16px;">
+              <span>📧 <strong>Email</strong> — kirim ke alamat email yang dikonfigurasi</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px 14px;border:1px solid var(--border);border-radius:8px;">
+              <input type="checkbox" id="reportChannelTelegram" checked style="width:16px;height:16px;">
+              <span>✈️ <strong>Telegram</strong> — kirim ke bot Telegram yang dikonfigurasi</span>
+            </label>
+          </div>
+
+          <p id="sendReportNote" style="font-size:12px;color:var(--text-secondary);">Pastikan Email / Telegram sudah dikonfigurasi di menu Config.</p>
+          <p id="sendReportError" class="error-text"></p>
+
+          <div class="modal-actions">
+            <button class="secondary-btn" onclick="closeSendReportModal()">Batal</button>
+            <button class="primary-btn" onclick="submitSendReport()">📤 Kirim Sekarang</button>
           </div>
         </div>
       </div>
