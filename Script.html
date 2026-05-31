@@ -1671,21 +1671,28 @@ function renderDashboard() {
   setText('rangeReportTitle', isSingleDay ? 'Rekap Penjualan' : 'Rekap Penjualan per Tanggal');
   setText('rangeReportNote', 'Range: ' + (rangeLabel || '-') + ' (' + days + ' hari)');
 
-  setText('cardRevenueToday', formatRupiah(cards.revenueToday || 0));
-  setText('cardGrossProfitToday', formatRupiah(cards.grossProfitToday || 0));
-  setText('cardExpensesToday', formatRupiah(cards.expensesToday || 0));
-  setText('cardNetProfitToday', formatRupiah(cards.netProfitToday || 0));
+  // Hitung nilai-nilai turunan
+  const omzet = Number(cards.revenueToday || 0);
+  const sharingExpenses = Number(cards.sharingExpensesToday || 0);
+  const totalKasbon = Number(cards.personalExpensesToday || 0);
+  const labaTerapis = omzet / 2;               // 50% omzet
+  const sisaInvestor = omzet / 2;              // 50% omzet (sisa setelah bagi terapis)
+  const labaInvestor1 = sisaInvestor * 0.60;   // 60% dari sisa investor
+  const labaInvestor2 = sisaInvestor * 0.40;   // 40% dari sisa investor
+
+  setText('cardRevenueToday', formatRupiah(omzet));
+  setText('cardSharingExpenses', formatRupiah(sharingExpenses));
+  setText('cardTotalKasbon', formatRupiah(totalKasbon));
+  setText('cardLabaTerapis', formatRupiah(labaTerapis));
   setText('cardTransactions', Number(cards.transactionsToday || 0).toLocaleString('id-ID'));
 
   // Rata-rata omzet per hari
-  const avgPerDay = (Number(cards.revenueToday || 0)) / days;
+  const avgPerDay = omzet / days;
   setText('cardAvgPerDay', formatRupiah(avgPerDay));
   setText('cardAvgPerDaySubtitle', 'Omzet / ' + days + ' hari');
 
-  setText('cardExpenseBreakdown', 'Operasional ' + formatRupiah(cards.sharingExpensesToday || 0) + ' / Pribadi ' + formatRupiah(cards.personalExpensesToday || 0));
-  const topTherapist = cards.topTherapistToday || {};
-  setText('cardTopTherapist', topTherapist.therapistName || '-');
-  setText('cardTopTherapistPoint', Number(topTherapist.totalPoint || 0) + ' pt / ' + formatRupiah(topTherapist.totalAmount || 0));
+  setText('cardLabaInvestor1', formatRupiah(labaInvestor1));
+  setText('cardLabaInvestor2', formatRupiah(labaInvestor2));
   renderRevenueChart(data.last7Revenue || []);
   renderPaymentSummary(data.paymentSummary || {});
   renderTopTherapists(data.topTherapists || []);
