@@ -529,18 +529,24 @@ function checkoutOrder(payload) {
 
     POS_appendObjects_(POS_SHEET.SALES, [salesRow]);
     POS_appendObjects_(POS_SHEET.SALE_ITEMS, saleItemRows);
+    POS_invalidateDashboardCache_();
 
+    // Batch stock update: 1 setValues per item (3 kolom sekaligus) vs 3 setValue terpisah
     normalizedItems.forEach(item => {
-      const stockCol = item.headerMap.Stock + 1;
-      const statusCol = item.headerMap.Stock_Status + 1;
-      const updatedAtCol = item.headerMap.Updated_At + 1;
-
       const newStock = item.currentStock - item.qty;
       const newStatus = POS_computeStockStatus_(newStock);
-
-      menuSheet.getRange(item.rowNumber, stockCol).setValue(newStock);
-      menuSheet.getRange(item.rowNumber, statusCol).setValue(newStatus);
-      menuSheet.getRange(item.rowNumber, updatedAtCol).setValue(now);
+      const hm = item.headerMap;
+      // Temukan kolom paling kiri dan paling kanan dari ketiga kolom target
+      const cols = [hm.Stock + 1, hm.Stock_Status + 1, hm.Updated_At + 1];
+      const minCol = Math.min.apply(null, cols);
+      const maxCol = Math.max.apply(null, cols);
+      const width = maxCol - minCol + 1;
+      // Baca nilai row saat ini lalu patch ketiga kolom sekaligus
+      const rowValues = menuSheet.getRange(item.rowNumber, minCol, 1, width).getValues()[0];
+      rowValues[hm.Stock - (minCol - 1)] = newStock;
+      rowValues[hm.Stock_Status - (minCol - 1)] = newStatus;
+      rowValues[hm.Updated_At - (minCol - 1)] = now;
+      menuSheet.getRange(item.rowNumber, minCol, 1, width).setValues([rowValues]);
     });
 
     SpreadsheetApp.flush();
@@ -669,6 +675,7 @@ function addExpense(payload) {
     };
     POS_appendObjects_(POS_SHEET.EXPENSES, [row]);
     SpreadsheetApp.flush();
+    POS_invalidateDashboardCache_();
     return { success: true, message: 'Pengeluaran berhasil disimpan.', data: row };
   } catch (error) { return POS_errorResponse_(error); }
   finally { try { lock.releaseLock(); } catch (e) {} }
@@ -701,6 +708,15 @@ function getExpenses() {
  */
 function getDashboardData(filter) {
   try {
+    // ── SERVER-SIDE CACHE (60 detik, invalid otomatis saat ada checkout/expense) ──
+    const cache = CacheService.getScriptCache();
+    const ver = cache.get('dash_ver') || '0';
+    const cacheKey = 'dash_v' + ver + '_' + JSON.stringify(filter || {});
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      try { return JSON.parse(cached); } catch (e) { /* cache corrupt, lanjut */ }
+    }
+
     const sales = POS_readObjects_(POS_SHEET.SALES);
     const saleItems = POS_readObjects_(POS_SHEET.SALE_ITEMS);
     const expenses = POS_readObjects_(POS_SHEET.EXPENSES).map(POS_normalizeExpenseRow_);
@@ -714,11 +730,46 @@ function getDashboardData(filter) {
 
     const paidSales = sales.filter(row => POS_toString_(row.Status) === 'PAID');
 
+    // ── PRE-INDEX untuk O(1) lookup (hindari O(n²) di loop harian) ────────
+    // Map: date → paidSales[]
+    const salesByDate = {};
+    paidSales.forEach(row => {
+      const d = POS_toString_(row.Date).slice(0, 10);
+      if (!salesByDate[d]) salesByDate[d] = [];
+      salesByDate[d].push(row);
+    });
+    // Map: transactionId → saleItems[]
+    const itemsByTxId = {};
+    saleItems.forEach(item => {
+      const txId = POS_toString_(item.Transaction_ID);
+      if (!txId) return;
+      if (!itemsByTxId[txId]) itemsByTxId[txId] = [];
+      itemsByTxId[txId].push(item);
+    });
+    // Map: date → expenses[]
+    const expensesByDate = {};
+    expenses.forEach(row => {
+      const d = POS_toString_(row.Date).slice(0, 10);
+      if (!expensesByDate[d]) expensesByDate[d] = [];
+      expensesByDate[d].push(row);
+    });
+
+    // Helper: ambil items dari Set txIds (O(1) per txId)
+    function getItemsForSales(salesArr) {
+      const result = [];
+      salesArr.forEach(row => {
+        const txId = POS_toString_(row.Transaction_ID);
+        if (itemsByTxId[txId]) result.push.apply(result, itemsByTxId[txId]);
+      });
+      return result;
+    }
+    function getDailyExpenses(date) { return expensesByDate[date] || []; }
+    function getDailySales(date) { return salesByDate[date] || []; }
+
     // Sales / items / expenses dalam range
     const rangeSales = paidSales.filter(row => POS_isDateInRange_(row.Date, range.startDate, range.endDate));
     const rangeExpenses = expenses.filter(row => POS_isDateInRange_(row.Date, range.startDate, range.endDate));
-    const rangeTransactionIds = rangeSales.map(row => POS_toString_(row.Transaction_ID));
-    const rangeItems = saleItems.filter(item => rangeTransactionIds.includes(POS_toString_(item.Transaction_ID)));
+    const rangeItems = getItemsForSales(rangeSales);
 
     // Agregat utama (kartu "hari ini" di UI sekarang berisi total range)
     const rangeRevenue = POS_sumSalesAmount_(rangeSales);
@@ -726,19 +777,19 @@ function getDashboardData(filter) {
     const rangeCost = POS_sumItemCost_(rangeItems, menuCostMap);
     const rangeGrossProfit = POS_sumItemGrossProfit_(rangeItems, menuCostMap);
     const rangeExpenseTotal = POS_sumExpenses_(rangeExpenses);
-    const rangeSharingExpenseTotal = POS_sumExpensesByType_(rangeExpenses, 'Sharing');
-    const rangePersonalExpenseTotal = POS_sumExpensesByType_(rangeExpenses, 'Personal') + POS_sumExpensesByType_(rangeExpenses, 'Therapist');
+    // Sudah dinormalisasi — langsung filter tanpa re-normalize
+    const rangeSharingExpenseTotal = rangeExpenses.filter(r => POS_toString_(r.Expense_Type) === 'Sharing').reduce((s, r) => s + POS_toNumber_(r.Amount), 0);
+    const rangePersonalExpenseTotal = rangeExpenses.filter(r => { const t = POS_toString_(r.Expense_Type); return t === 'Personal' || t === 'Therapist'; }).reduce((s, r) => s + POS_toNumber_(r.Amount), 0);
     const rangeNetProfit = rangeGrossProfit - rangeExpenseTotal;
     const rangeTransactions = rangeSales.length;
     const rangeTherapistPoints = allTherapistPoints.filter(r => POS_isDateInRange_(r.Date, range.startDate, range.endDate));
     const topTherapistRange = POS_calculateTopTherapists_(rangeTherapistPoints, 1)[0] || { therapistId: '-', therapistName: '-', totalPoint: 0, totalAmount: 0, count: 0 };
 
-    // Breakdown harian dalam range
+    // Breakdown harian dalam range — O(1) lookup via pre-index
     const rangeDailyBreakdown = rangeDates.map(date => {
-      const dailySales = paidSales.filter(row => POS_isSameDateString_(row.Date, date));
-      const dailyTransactionIds = dailySales.map(row => POS_toString_(row.Transaction_ID));
-      const dailyItems = saleItems.filter(item => dailyTransactionIds.includes(POS_toString_(item.Transaction_ID)));
-      const dailyExpenses = expenses.filter(row => POS_isSameDateString_(row.Date, date));
+      const dailySales = getDailySales(date);
+      const dailyItems = getItemsForSales(dailySales);
+      const dailyExpenses = getDailyExpenses(date);
       const revenue = POS_sumSalesAmount_(dailySales);
       const grossProfit = POS_sumItemGrossProfit_(dailyItems, menuCostMap);
       const expenseTotal = POS_sumExpenses_(dailyExpenses);
@@ -762,13 +813,12 @@ function getDashboardData(filter) {
       transactions: rangeTransactions
     };
 
-    // Chart 7 hari terakhir relatif terhadap endDate range
+    // Chart 7 hari terakhir — O(1) lookup via pre-index
     const last7Dates = POS_getLast7DateStringsFrom_(range.endDate);
     const last7Revenue = last7Dates.map(date => {
-      const dailySales = paidSales.filter(row => POS_isSameDateString_(row.Date, date));
-      const dailyTransactionIds = dailySales.map(row => POS_toString_(row.Transaction_ID));
-      const dailyItems = saleItems.filter(item => dailyTransactionIds.includes(POS_toString_(item.Transaction_ID)));
-      const dailyExpenses = expenses.filter(row => POS_isSameDateString_(row.Date, date));
+      const dailySales = getDailySales(date);
+      const dailyItems = getItemsForSales(dailySales);
+      const dailyExpenses = getDailyExpenses(date);
       const revenue = POS_sumSalesAmount_(dailySales);
       const grossProfit = POS_sumItemGrossProfit_(dailyItems, menuCostMap);
       const expenseTotal = POS_sumExpenses_(dailyExpenses);
@@ -786,7 +836,7 @@ function getDashboardData(filter) {
       return t === 'Personal' || t === 'Therapist';
     }));
 
-    return {
+    const result = {
       success: true,
       message: 'Dashboard berhasil dimuat.',
       data: {
@@ -823,6 +873,9 @@ function getDashboardData(filter) {
         personalExpenses: personalExpenses
       }
     };
+    // Simpan ke cache (60 detik)
+    try { cache.put(cacheKey, JSON.stringify(result), 60); } catch (e) { /* abaikan jika payload terlalu besar */ }
+    return result;
   } catch (error) { return POS_errorResponse_(error); }
 }
 
@@ -997,7 +1050,18 @@ function POS_getItemCost_(item, menuCostMap) { const existing=POS_toNumber_(item
 function POS_sumItemCost_(items, menuCostMap) { return items.reduce((sum, item) => sum + POS_getItemCost_(item, menuCostMap), 0); }
 function POS_sumItemGrossProfit_(items, menuCostMap) { return items.reduce((sum, item) => { const existing=POS_toNumber_(item.Gross_Profit); if (existing !== 0 || POS_toString_(item.Gross_Profit) !== '') return sum + existing; return sum + POS_toNumber_(item.Amount) - POS_getItemCost_(item, menuCostMap); }, 0); }
 function POS_sumExpenses_(expenses) { return expenses.reduce((sum, row) => sum + POS_toNumber_(row.Amount), 0); }
-function POS_sumExpensesByType_(expenses, type) { return expenses.map(POS_normalizeExpenseRow_).filter(row => POS_toString_(row.Expense_Type || 'Sharing') === type).reduce((sum, row) => sum + POS_toNumber_(row.Amount), 0); }
+// Catatan: fungsi ini mengasumsikan expenses sudah dinormalisasi (Expense_Type sudah diisi).
+// Jangan panggil dengan data mentah — gunakan setelah .map(POS_normalizeExpenseRow_).
+function POS_sumExpensesByType_(expenses, type) { return expenses.filter(row => POS_toString_(row.Expense_Type || 'Sharing') === type).reduce((sum, row) => sum + POS_toNumber_(row.Amount), 0); }
+// ── Cache invalidation ─────────────────────────────────────────────────────
+function POS_invalidateDashboardCache_() {
+  try {
+    const cache = CacheService.getScriptCache();
+    // Naikkan versi — getDashboardData akan membaca versi ini sebagai bagian dari cache key
+    const v = (parseInt(cache.get('dash_ver') || '0', 10) + 1) % 9999;
+    cache.put('dash_ver', String(v), 3600);
+  } catch (e) {}
+}
 function POS_calculateTopCashiers_(sales, limit) { const map={}; sales.forEach(row => { const cashierName=POS_toString_(row.Cashier_Name) || '-'; const amount=POS_toNumber_(row.Rounded_Total || row.Grand_Total); if(!map[cashierName]) map[cashierName]={cashierName:cashierName,transactions:0,revenue:0}; map[cashierName].transactions += 1; map[cashierName].revenue += amount; }); return Object.values(map).sort((a,b)=> b.revenue !== a.revenue ? b.revenue-a.revenue : b.transactions-a.transactions).slice(0, limit || 5); }
 function POS_calculateTopTherapists_(pointRows, limit) { const map={}; pointRows.forEach(row => { const id=POS_toString_(row.Therapist_ID) || '-'; const name=POS_toString_(row.Therapist_Name) || '-'; if(!map[id]) map[id]={therapistId:id,therapistName:name,totalPoint:0,totalAmount:0,count:0}; map[id].totalPoint += POS_toNumber_(row.Total_Point); map[id].totalAmount += POS_toNumber_(row.Amount); map[id].count += 1; }); return Object.values(map).sort((a,b)=> b.totalPoint !== a.totalPoint ? b.totalPoint-a.totalPoint : b.totalAmount-a.totalAmount).slice(0, limit || 5); }
 function POS_groupExpensesByCategory_(expenses) { const map={}; expenses.forEach(row => { const category=POS_toString_(row.Category) || 'Lainnya'; if(!map[category]) map[category]={category:category,amount:0,count:0}; map[category].amount += POS_toNumber_(row.Amount); map[category].count += 1; }); return Object.values(map).sort((a,b)=>b.amount-a.amount); }

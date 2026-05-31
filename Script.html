@@ -1,4 +1,15 @@
 <script>
+  // ── Client-side dashboard cache ──────────────────────────────────────────
+  const _dashCache = { key: null, data: null, ts: 0 };
+  const DASH_CACHE_TTL = 120000; // 2 menit
+
+  // ── Menu search debounce ──────────────────────────────────────────────────
+  let _menuSearchTimer = null;
+  function onMenuSearch() {
+    clearTimeout(_menuSearchTimer);
+    _menuSearchTimer = setTimeout(renderMenus, 300);
+  }
+
   const state = {
     cashierName: '',
     config: {
@@ -319,18 +330,17 @@
       .map(function (category) {
         const activeClass = state.selectedCategory === category ? 'active' : '';
 
-        return `
-          <button class="category-chip ${activeClass}" onclick="selectCategory('${escapeHtml(category)}')">
-            ${escapeHtml(category)}
-          </button>
-        `;
+        return `<button class="category-chip ${activeClass}" data-cat="${escapeAttr(category)}" onclick="selectCategory('${escapeAttr(category)}')">${escapeHtml(category)}</button>`;
       })
       .join('');
   }
 
   function selectCategory(category) {
     state.selectedCategory = category;
-    renderCategoryFilter();
+    // Toggle active class tanpa rebuild semua chip (lebih cepat)
+    document.querySelectorAll('#categoryFilter .category-chip').forEach(function(chip) {
+      chip.classList.toggle('active', chip.dataset.cat === category);
+    });
     renderMenus();
   }
 
@@ -1243,7 +1253,8 @@ function saveExpense() {
       clearExpenseForm();
       showToast('Pengeluaran berhasil disimpan.');
       loadPengeluaranData();
-      if (state.dashboardUnlocked || sessionStorage.getItem('pos_dashboard_unlocked') === 'true') loadDashboardData();
+      _dashCache.ts = 0; // invalidate client cache
+      if (state.dashboardUnlocked || sessionStorage.getItem('pos_dashboard_unlocked') === 'true') loadDashboardData(true);
     })
     .withFailureHandler(function (err) { setLoading(false); showToast(getErrorMessage(err), 'error'); })
     .addExpense(payload);
@@ -1321,7 +1332,8 @@ function getFilteredExpenses() {
   const cashierKeyword = getInputValue('expenseFilterCashier').toLowerCase();
   const searchKeyword = getInputValue('expenseFilterSearch').toLowerCase();
   const sortBy = getInputValue('expenseSortBy') || 'newest';
-  let rows = (state.expenses || []).map(normalizeExpenseItem).filter(function (item) {
+  // state.expenses sudah dinormalisasi saat loadPengeluaranData — tidak perlu map lagi
+  let rows = (state.expenses || []).filter(function (item) {
     const itemDate = String(item.Date || '');
     const itemType = item.Expense_Type || getExpenseTypeByCategory(item.Category);
     const itemCategory = String(item.Category || '');
@@ -1353,7 +1365,8 @@ function getFilteredExpenses() {
 function renderPengeluaranTable() {
   const tbody = document.getElementById('pengeluaranTableBody');
   if (!tbody) return;
-  const expenses = getFilteredExpenses().map(normalizeExpenseItem);
+  // getFilteredExpenses sudah return data yang ternormalisasi
+  const expenses = getFilteredExpenses();
   updateExpenseFilterSummary(expenses);
   if (expenses.length === 0) { tbody.innerHTML = '<tr><td colspan="7">Tidak ada pengeluaran sesuai filter.</td></tr>'; return; }
   tbody.innerHTML = expenses.map(function(item){
@@ -1510,11 +1523,20 @@ function showDashboardContent() {
   document.getElementById('dashboardContent').classList.remove('hidden');
 }
 
-function loadDashboardData() {
+function loadDashboardData(forceRefresh) {
   // Pastikan input tanggal sudah terisi (kalau pertama kali masuk, default = hari ini)
   ensureDashboardFilterDefaults();
 
   const filter = getDashboardFilterValue();
+  const cacheKey = JSON.stringify(filter);
+  const now = Date.now();
+
+  // ── Client-side cache: sajikan dari cache jika filter sama & belum expired ──
+  if (!forceRefresh && _dashCache.key === cacheKey && (now - _dashCache.ts) < DASH_CACHE_TTL && _dashCache.data) {
+    state.dashboardData = _dashCache.data;
+    renderDashboard();
+    return;
+  }
 
   setLoading(true, 'Memuat dashboard...');
 
@@ -1528,6 +1550,10 @@ function loadDashboardData() {
       }
 
       state.dashboardData = res.data;
+      // Simpan ke client cache
+      _dashCache.key = cacheKey;
+      _dashCache.data = res.data;
+      _dashCache.ts = Date.now();
       renderDashboard();
     })
     .withFailureHandler(function (err) {
@@ -2943,6 +2969,9 @@ function submitCheckout(payload) {
 
       // Reset dropdown pilihan terapis
       resetPosTherapistDropdown();
+
+      // Invalidate dashboard cache agar data terbaru muncul saat buka dashboard
+      _dashCache.ts = 0;
 
       showSuccessModal(res.data.transactionId);
     })
