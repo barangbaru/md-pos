@@ -1675,10 +1675,10 @@ function renderDashboard() {
   const omzet = Number(cards.revenueToday || 0);
   const sharingExpenses = Number(cards.sharingExpensesToday || 0);
   const totalKasbon = Number(cards.personalExpensesToday || 0);
-  const labaTerapis = omzet / 2;               // 50% omzet
-  const sisaInvestor = omzet / 2;              // 50% omzet (sisa setelah bagi terapis)
-  const labaInvestor1 = sisaInvestor * 0.60;   // 60% dari sisa investor
-  const labaInvestor2 = sisaInvestor * 0.40;   // 40% dari sisa investor
+  const labaTerapis = omzet / 2;                              // 50% omzet
+  const sisaInvestor = (omzet / 2) - sharingExpenses;        // 50% omzet - operasional
+  const labaInvestor1 = sisaInvestor * 0.60;                 // 60% dari sisa investor
+  const labaInvestor2 = sisaInvestor * 0.40;                 // 40% dari sisa investor
 
   setText('cardRevenueToday', formatRupiah(omzet));
   setText('cardSharingExpenses', formatRupiah(sharingExpenses));
