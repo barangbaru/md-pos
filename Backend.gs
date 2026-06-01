@@ -1347,16 +1347,15 @@ function sendReport(payload) {
 
     if (channels.indexOf('email') !== -1) {
       if (!reportEmail) {
-        results.email = { success: false, message: 'Email penerima belum dikonfigurasi di Config.' };
+        const msg = 'Email penerima belum dikonfigurasi di Config.';
+        try { POS_logError_('sendReport[email]', msg); } catch(e) {}
+        results.email = { success: false, message: msg };
       } else {
         try {
-          MailApp.sendEmail({
-            to: reportEmail,
-            subject: emailSubject,
-            htmlBody: emailHtml
-          });
+          MailApp.sendEmail({ to: reportEmail, subject: emailSubject, htmlBody: emailHtml });
           results.email = { success: true, message: 'Email terkirim ke ' + reportEmail };
         } catch (e) {
+          try { POS_logError_('sendReport[email]', e.message); } catch(le) {}
           results.email = { success: false, message: 'Gagal kirim email: ' + e.message };
         }
       }
@@ -1364,12 +1363,15 @@ function sendReport(payload) {
 
     if (channels.indexOf('telegram') !== -1) {
       if (!telegramToken || !telegramChatId) {
-        results.telegram = { success: false, message: 'Token atau Chat ID Telegram belum dikonfigurasi.' };
+        const msg = 'Token atau Chat ID Telegram belum dikonfigurasi.';
+        try { POS_logError_('sendReport[telegram]', msg); } catch(e) {}
+        results.telegram = { success: false, message: msg };
       } else {
         try {
           POS_sendTelegram_(telegramToken, telegramChatId, telegramMessage);
           results.telegram = { success: true, message: 'Pesan Telegram terkirim.' };
         } catch (e) {
+          try { POS_logError_('sendReport[telegram]', e.message); } catch(le) {}
           results.telegram = { success: false, message: 'Gagal kirim Telegram: ' + e.message };
         }
       }
@@ -1515,8 +1517,13 @@ function POS_purgeOldLogs_(retentionDays) {
 
 /** Trigger harian — dipanggil GAS time-based trigger. */
 function POS_autoCleanupTrigger_() {
-  const days = POS_toNumber_(POS_getConfigValue_('LOG_RETENTION_DAYS', '60')) || 60;
-  POS_purgeOldLogs_(days);
+  try {
+    const days = POS_toNumber_(POS_getConfigValue_('LOG_RETENTION_DAYS', '60')) || 60;
+    POS_purgeOldLogs_(days);
+  } catch (e) {
+    try { POS_logError_('POS_autoCleanupTrigger_', e.message); } catch(le) {}
+    Logger.log('❌ Auto-cleanup gagal: ' + e.message);
+  }
 }
 
 /** Setup trigger harian jam 03:00 untuk auto-cleanup. Idempotent. */
@@ -1555,6 +1562,19 @@ function getErrorLogs(payload) {
     });
     return { success: true, data: { logs: logs, total: total } };
   } catch (e) { return POS_errorResponse_(e); }
+}
+
+/**
+ * Terima error dari frontend (client-side) dan tulis ke ERROR_LOG.
+ * Dipanggil via google.script.run — fire-and-forget dari browser.
+ */
+function logClientError(payload) {
+  try {
+    const context = POS_toString_(payload && payload.context).slice(0, 80) || '[CLIENT]';
+    const message = POS_toString_(payload && payload.message).slice(0, 500) || 'unknown';
+    POS_logError_(context, message);
+    return { success: true };
+  } catch (e) { return { success: false }; }
 }
 
 /** Purge manual dengan retensi yang bisa dikonfigurasi. */

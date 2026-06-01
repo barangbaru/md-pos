@@ -124,6 +124,7 @@
       .withFailureHandler(function (err) {
         setLoading(false);
         errorEl.textContent = getErrorMessage(err);
+        clientLogError_('handleLogin', err);
       })
       .validateCashierLogin({
         cashierName,
@@ -231,10 +232,7 @@
 
         showToast('Data berhasil dimuat.');
       })
-      .withFailureHandler(function (err) {
-        setLoading(false);
-        showToast(getErrorMessage(err), 'error');
-      })
+      .withFailureHandler(onFail_('refreshInitialData'))
       .getInitialData();
   }
 
@@ -894,6 +892,49 @@
     return String(err);
   }
 
+  /**
+   * Kirim error client-side ke ERROR_LOG di server.
+   * Fire-and-forget — tidak blocking, tidak tampilkan toast.
+   * @param {string} context  Nama fungsi / konteks (misal 'submitCheckout')
+   * @param {string|Error} err  Pesan atau objek error
+   */
+  /**
+   * Kirim error client-side ke ERROR_LOG di server.
+   * Fire-and-forget — tidak blocking, tidak tampilkan toast.
+   */
+  function clientLogError_(context, err) {
+    const msg = (err && err.message) ? err.message : String(err || 'unknown error');
+    try {
+      google.script.run
+        .withSuccessHandler(function() {})
+        .withFailureHandler(function() {})
+        .logClientError({ context: '[CLIENT] ' + (context || 'unknown'), message: msg });
+    } catch(e) {}
+  }
+
+  /**
+   * Factory: buat withFailureHandler yang log + tampil toast sekaligus.
+   * Gunakan: .withFailureHandler(onFail_('namaFungsi'))
+   */
+  function onFail_(context, customToast) {
+    return function(err) {
+      const msg = getErrorMessage(err);
+      setLoading(false);
+      showToast(customToast || msg, 'error');
+      clientLogError_(context, msg);
+    };
+  }
+
+  /**
+   * Factory: buat handler !res.success yang log + tampil toast.
+   * Gunakan: if (!res.success) { onResError_('namaFungsi', res); return; }
+   */
+  function onResError_(context, res, customToast) {
+    const msg = res && res.message ? res.message : 'Terjadi kesalahan.';
+    showToast(customToast || msg, 'error');
+    clientLogError_(context, msg);
+  }
+
   /* =====================================================
      FORMAT HELPERS
   ===================================================== */
@@ -1094,10 +1135,7 @@ function updateStock(menuId, mode) {
 
       refreshAfterStockUpdate();
     })
-    .withFailureHandler(function (err) {
-      setLoading(false);
-      showToast(getErrorMessage(err), 'error');
-    })
+    .withFailureHandler(onFail_('updateStock'))
     .updateMenuStock({
       menuId: menuId,
       mode: mode,
@@ -1124,10 +1162,7 @@ function updateCost(menuId) {
       if (input) input.value = '';
       refreshAfterStockUpdate();
     })
-    .withFailureHandler(function (err) {
-      setLoading(false);
-      showToast(getErrorMessage(err), 'error');
-    })
+    .withFailureHandler(onFail_('updateCost'))
     .updateMenuCost({ menuId: menuId, costValue: costValue });
 }
 
@@ -1148,9 +1183,7 @@ function refreshAfterStockUpdate() {
       renderCart();
       updateSummary();
     })
-    .withFailureHandler(function (err) {
-      showToast(getErrorMessage(err), 'error');
-    })
+    .withFailureHandler(onFail_('refreshAfterStockUpdate'))
     .getMenus();
 }
 
@@ -1268,7 +1301,7 @@ function saveExpense() {
       _dashCache.ts = 0; // invalidate client cache
       if (state.dashboardUnlocked || sessionStorage.getItem('pos_dashboard_unlocked') === 'true') loadDashboardData(true);
     })
-    .withFailureHandler(function (err) { setLoading(false); showToast(getErrorMessage(err), 'error'); })
+    .withFailureHandler(onFail_('saveExpense'))
     .addExpense(payload);
 }
 
@@ -1308,7 +1341,7 @@ function loadPengeluaranData() {
       populateExpenseFilterOptions();
       renderPengeluaranTable();
     })
-    .withFailureHandler(function (err) { showToast(getErrorMessage(err), 'error'); })
+    .withFailureHandler(onFail_('loadPengeluaranData'))
     .getExpenses();
 }
 
@@ -1519,6 +1552,7 @@ function validateProtectedAccess() {
     .withFailureHandler(function (err) {
       setLoading(false);
       errorEl.textContent = getErrorMessage(err);
+      clientLogError_('validateProtectedAccess', err);
     })
     .validateProtectedTabPasscode({
       area: state.protectedTarget,
@@ -1568,10 +1602,7 @@ function loadDashboardData(forceRefresh) {
       _dashCache.ts = Date.now();
       renderDashboard();
     })
-    .withFailureHandler(function (err) {
-      setLoading(false);
-      showToast(getErrorMessage(err), 'error');
-    })
+    .withFailureHandler(onFail_('loadDashboardData'))
     .getDashboardData(filter);
 }
 
@@ -1886,10 +1917,7 @@ function loadTherapistData() {
       populatePosTherapistDropdowns(); // sync dropdown POS kasir
       loadTherapistPoints();
     })
-    .withFailureHandler(function (err) {
-      setLoading(false);
-      showToast(getErrorMessage(err), 'error');
-    })
+    .withFailureHandler(onFail_('loadTherapistData'))
     .getTherapists({});
 }
 
@@ -1901,7 +1929,8 @@ function loadTherapistPoints() {
       renderTherapistPointTable();
     })
     .withFailureHandler(function (err) {
-      console.error('Load points failed:', getErrorMessage(err));
+      const msg = getErrorMessage(err);
+      clientLogError_('loadTherapistPoints', msg);
     })
     .getTherapistPoints({ startDate: getOneDayAgo(), endDate: getTodayLocalISO() });
 }
@@ -1988,10 +2017,7 @@ function saveTherapistForm() {
       cancelTherapistForm();
       loadTherapistData();
     })
-    .withFailureHandler(function (err) {
-      setLoading(false);
-      showToast(getErrorMessage(err), 'error');
-    })
+    .withFailureHandler(onFail_('saveTherapistForm'))
     .saveTherapist(payload);
 }
 
@@ -2035,10 +2061,7 @@ function deactivateTherapist(therapistId) {
       showToast(res.message);
       loadTherapistData();
     })
-    .withFailureHandler(function (err) {
-      setLoading(false);
-      showToast(getErrorMessage(err), 'error');
-    })
+    .withFailureHandler(onFail_('deactivateTherapist'))
     .deactivateTherapist({ therapistId: therapistId });
 }
 
@@ -2055,10 +2078,7 @@ function reactivateTherapist(therapistId) {
       showToast(res.message);
       loadTherapistData();
     })
-    .withFailureHandler(function (err) {
-      setLoading(false);
-      showToast(getErrorMessage(err), 'error');
-    })
+    .withFailureHandler(onFail_('reactivateTherapist'))
     .reactivateTherapist({ therapistId: therapistId });
 }
 
@@ -2135,10 +2155,7 @@ function saveTherapistPoint() {
       document.getElementById('pointFormNotes').value = '';
       loadTherapistPoints();
     })
-    .withFailureHandler(function (err) {
-      setLoading(false);
-      showToast(getErrorMessage(err), 'error');
-    })
+    .withFailureHandler(onFail_('saveTherapistPoint'))
     .saveTherapistPoint(payload);
 }
 
@@ -2165,10 +2182,7 @@ function loadKonsolidasiData() {
       state.konsolidasiData = res.data;
       renderKonsolidasi();
     })
-    .withFailureHandler(function (err) {
-      setLoading(false);
-      showToast(getErrorMessage(err), 'error');
-    })
+    .withFailureHandler(onFail_('loadKonsolidasiData'))
     .getTherapistConsolidation(filter);
 }
 
@@ -2406,10 +2420,7 @@ function saveConfig() {
 
       showToast('Config berhasil disimpan.');
     })
-    .withFailureHandler(function (err) {
-      setLoading(false);
-      showToast(getErrorMessage(err), 'error');
-    })
+    .withFailureHandler(onFail_('saveConfig'))
     .updateConfig(payload);
 }
 
@@ -2446,7 +2457,7 @@ function toggleMaintenanceMode(enable) {
       showToast(res.success ? res.message : (res.message || 'Gagal.'), res.success ? 'success' : 'error');
       loadMaintenanceStatus();
     })
-    .withFailureHandler(function(err) { setLoading(false); showToast(getErrorMessage(err), 'error'); })
+    .withFailureHandler(onFail_('toggleMaintenanceMode'))
     .setMaintenanceMode({ enabled: enable, reason: reason });
 }
 
@@ -2458,7 +2469,7 @@ function doSetupLogTrigger() {
       setLoading(false);
       showToast(res.success ? res.message : (res.message || 'Gagal.'), res.success ? 'success' : 'error');
     })
-    .withFailureHandler(function(err) { setLoading(false); showToast(getErrorMessage(err), 'error'); })
+    .withFailureHandler(onFail_('doSetupLogTrigger'))
     .setupLogCleanupTrigger();
 }
 
@@ -2479,7 +2490,11 @@ function loadErrorLogs() {
           + '<td style="color:#ef4444;">' + escapeHtml(l.error) + '</td></tr>';
       }).join('');
     })
-    .withFailureHandler(function(err) { if (tbody) tbody.innerHTML = '<tr><td colspan="3">' + escapeHtml(getErrorMessage(err)) + '</td></tr>'; })
+    .withFailureHandler(function(err) {
+      const msg = getErrorMessage(err);
+      if (tbody) tbody.innerHTML = '<tr><td colspan="3">' + escapeHtml(msg) + '</td></tr>';
+      clientLogError_('loadErrorLogs', msg);
+    })
     .getErrorLogs({ limit: 50 });
 }
 
@@ -2504,7 +2519,7 @@ function submitPurgeLog() {
       showToast(res.success ? res.message : (res.message || 'Gagal.'), res.success ? 'success' : 'error');
       if (res.success) loadErrorLogs();
     })
-    .withFailureHandler(function(err) { setLoading(false); showToast(getErrorMessage(err), 'error'); })
+    .withFailureHandler(onFail_('submitPurgeLog'))
     .purgeErrorLogs({ retentionDays: days });
 }
 
@@ -2560,10 +2575,7 @@ function submitSendReport() {
       const allOk = Object.values(results).every(function(r) { return r.success; });
       showToast(msgs.join(' | '), allOk ? 'success' : 'error');
     })
-    .withFailureHandler(function(err) {
-      setLoading(false);
-      showToast('Gagal kirim laporan: ' + getErrorMessage(err), 'error');
-    })
+    .withFailureHandler(onFail_('submitSendReport', 'Gagal kirim laporan. Cek error log.'))
     .sendReport({ filter: filter, channels: channels });
 }
 
@@ -3128,11 +3140,11 @@ function submitCheckout(payload) {
         google.script.run
           .withSuccessHandler(function(ptRes) {
             if (!ptRes.success) {
-              console.warn('Gagal simpan point terapis:', ptRes.message);
+              clientLogError_('submitCheckout[saveTherapistPoint]', ptRes.message);
             }
           })
           .withFailureHandler(function(ptErr) {
-            console.error('Error simpan point terapis:', getErrorMessage(ptErr));
+            clientLogError_('submitCheckout[saveTherapistPoint]', getErrorMessage(ptErr));
           })
           .saveTherapistPoint({
             cashierName  : state.cashierName,
@@ -3153,10 +3165,7 @@ function submitCheckout(payload) {
 
       showSuccessModal(res.data.transactionId);
     })
-    .withFailureHandler(function (err) {
-      setLoading(false);
-      showToast(getErrorMessage(err), 'error');
-    })
+    .withFailureHandler(onFail_('submitCheckout'))
     .checkoutOrder(payload);
 }
 
