@@ -16,7 +16,8 @@ const POS_SHEET = {
   EXPENSES: 'EXPENSES',
   THERAPISTS: 'THERAPISTS',
   THERAPIST_POINTS: 'THERAPIST_POINTS',
-  CONFIG: 'CONFIG'
+  CONFIG: 'CONFIG',
+  ERROR_LOG: 'ERROR_LOG'
 };
 
 const POS_STATUS = {
@@ -51,6 +52,20 @@ function POS_getSheet_(sheetName) {
     throw new Error('Sheet tidak ditemukan: ' + sheetName);
   }
 
+  return sheet;
+}
+
+/** Ambil sheet; jika belum ada, buat baru dengan header opsional. */
+function POS_getOrCreateSheet_(sheetName, headers) {
+  const ss = POS_openSpreadsheet_();
+  let sheet = ss.getSheetByName(sheetName);
+  if (!sheet) {
+    sheet = ss.insertSheet(sheetName);
+    if (headers && headers.length > 0) {
+      sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+      sheet.setFrozenRows(1);
+    }
+  }
   return sheet;
 }
 

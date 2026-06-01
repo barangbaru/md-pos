@@ -45,6 +45,18 @@
   document.addEventListener('DOMContentLoaded', initApp);
 
   function initApp() {
+    // Cek maintenance mode saat startup
+    google.script.run
+      .withSuccessHandler(function(res) {
+        if (res && res.data && res.data.enabled) {
+          const banner = document.getElementById('maintenanceBanner');
+          const txt = document.getElementById('maintenanceBannerText');
+          if (banner) banner.classList.remove('hidden');
+          if (txt && res.data.reason) txt.textContent = res.data.reason;
+        }
+      })
+      .withFailureHandler(function() {})
+      .getMaintenanceStatus();
     const savedCashier = localStorage.getItem('pos_cashier_name');
 
     // Pasang delegasi klik untuk tombol preset filter tanggal dashboard & konsolidasi
@@ -2331,6 +2343,9 @@ function fillConfigForm() {
   setInputValue('configReportEmail', state.config.reportEmail || '');
   setInputValue('configTelegramBotToken', state.config.telegramBotToken || '');
   setInputValue('configTelegramChatId', state.config.telegramChatId || '');
+  // Maintenance & Log
+  setInputValue('configLogRetentionDays', state.config.logRetentionDays || 60);
+  loadMaintenanceStatus();
 
   setInputValue('configCashierPasscode', '');
   setInputValue('configDashboardPasscode', '');
@@ -2366,7 +2381,8 @@ function saveConfig() {
     // Notifikasi
     reportEmail: getInputValue('configReportEmail'),
     telegramBotToken: getInputValue('configTelegramBotToken'),
-    telegramChatId: getInputValue('configTelegramChatId')
+    telegramChatId: getInputValue('configTelegramChatId'),
+    logRetentionDays: getInputValue('configLogRetentionDays')
   };
 
   setLoading(true, 'Menyimpan config...');
@@ -2395,6 +2411,101 @@ function saveConfig() {
       showToast(getErrorMessage(err), 'error');
     })
     .updateConfig(payload);
+}
+
+/* =====================================================
+   MAINTENANCE & ERROR LOG
+===================================================== */
+
+function loadMaintenanceStatus() {
+  google.script.run
+    .withSuccessHandler(function(res) {
+      if (!res || !res.data) return;
+      const enabled = res.data.enabled;
+      const reason  = res.data.reason || '';
+      const statusEl = document.getElementById('maintenanceStatusText');
+      const reasonEl = document.getElementById('maintenanceReason');
+      const banner   = document.getElementById('maintenanceBanner');
+      const bannerTxt = document.getElementById('maintenanceBannerText');
+      if (statusEl) statusEl.innerHTML = 'Status: <strong style="color:' + (enabled ? '#ef4444' : '#22c55e') + '">' + (enabled ? '🔴 AKTIF' : '✅ Nonaktif') + '</strong>';
+      if (reasonEl && reason) reasonEl.value = reason;
+      if (banner) { if (enabled) banner.classList.remove('hidden'); else banner.classList.add('hidden'); }
+      if (bannerTxt && reason) bannerTxt.textContent = reason;
+    })
+    .withFailureHandler(function() {})
+    .getMaintenanceStatus();
+}
+
+function toggleMaintenanceMode(enable) {
+  const reason = getInputValue('maintenanceReason') || 'Sistem sedang dalam pemeliharaan.';
+  if (enable && !confirm('Aktifkan maintenance mode?\nSemua pengguna akan melihat banner peringatan.')) return;
+  setLoading(true, enable ? 'Mengaktifkan maintenance...' : 'Menonaktifkan maintenance...');
+  google.script.run
+    .withSuccessHandler(function(res) {
+      setLoading(false);
+      showToast(res.success ? res.message : (res.message || 'Gagal.'), res.success ? 'success' : 'error');
+      loadMaintenanceStatus();
+    })
+    .withFailureHandler(function(err) { setLoading(false); showToast(getErrorMessage(err), 'error'); })
+    .setMaintenanceMode({ enabled: enable, reason: reason });
+}
+
+function doSetupLogTrigger() {
+  if (!confirm('Setup auto-cleanup trigger?\nLog lama akan dihapus otomatis setiap hari jam 03:00.')) return;
+  setLoading(true, 'Setup trigger...');
+  google.script.run
+    .withSuccessHandler(function(res) {
+      setLoading(false);
+      showToast(res.success ? res.message : (res.message || 'Gagal.'), res.success ? 'success' : 'error');
+    })
+    .withFailureHandler(function(err) { setLoading(false); showToast(getErrorMessage(err), 'error'); })
+    .setupLogCleanupTrigger();
+}
+
+function loadErrorLogs() {
+  const tbody   = document.getElementById('errorLogTableBody');
+  const summary = document.getElementById('errorLogSummary');
+  if (tbody) tbody.innerHTML = '<tr><td colspan="3">Memuat log...</td></tr>';
+  google.script.run
+    .withSuccessHandler(function(res) {
+      if (!res.success) { if (tbody) tbody.innerHTML = '<tr><td colspan="3">' + escapeHtml(res.message) + '</td></tr>'; return; }
+      const logs = res.data.logs || [];
+      const total = res.data.total || 0;
+      if (summary) summary.textContent = 'Total ' + total + ' entri — menampilkan ' + logs.length + ' terbaru.';
+      if (logs.length === 0) { if (tbody) tbody.innerHTML = '<tr><td colspan="3">Tidak ada log error.</td></tr>'; return; }
+      if (tbody) tbody.innerHTML = logs.map(function(l) {
+        return '<tr><td style="white-space:nowrap;"><strong>' + escapeHtml(l.date) + '</strong><br><small>' + escapeHtml(l.time) + '</small></td>'
+          + '<td><code style="font-size:11px;">' + escapeHtml(l.fn) + '</code></td>'
+          + '<td style="color:#ef4444;">' + escapeHtml(l.error) + '</td></tr>';
+      }).join('');
+    })
+    .withFailureHandler(function(err) { if (tbody) tbody.innerHTML = '<tr><td colspan="3">' + escapeHtml(getErrorMessage(err)) + '</td></tr>'; })
+    .getErrorLogs({ limit: 50 });
+}
+
+function openPurgeLogModal() {
+  document.getElementById('purgeLogError').textContent = '';
+  document.getElementById('purgeLogModal').classList.remove('hidden');
+}
+
+function closePurgeLogModal() {
+  document.getElementById('purgeLogModal').classList.add('hidden');
+}
+
+function submitPurgeLog() {
+  const days = parseInt(document.getElementById('purgeRetentionDays').value) || 60;
+  const errorEl = document.getElementById('purgeLogError');
+  if (days < 1 || days > 90) { errorEl.textContent = 'Masukkan angka 1–90.'; return; }
+  closePurgeLogModal();
+  setLoading(true, 'Membersihkan log...');
+  google.script.run
+    .withSuccessHandler(function(res) {
+      setLoading(false);
+      showToast(res.success ? res.message : (res.message || 'Gagal.'), res.success ? 'success' : 'error');
+      if (res.success) loadErrorLogs();
+    })
+    .withFailureHandler(function(err) { setLoading(false); showToast(getErrorMessage(err), 'error'); })
+    .purgeErrorLogs({ retentionDays: days });
 }
 
 /* =====================================================

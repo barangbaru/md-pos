@@ -7,6 +7,11 @@
 
   <body>
     <div id="app">
+      <!-- MAINTENANCE BANNER -->
+      <div id="maintenanceBanner" class="hidden" style="background:#ef4444;color:#fff;text-align:center;padding:8px 16px;font-size:14px;font-weight:600;position:sticky;top:0;z-index:9999;">
+        🔧 <span id="maintenanceBannerText">Sistem sedang dalam pemeliharaan.</span>
+      </div>
+
       <!-- LOGIN SCREEN -->
       <section id="loginScreen" class="login-screen">
         <div class="login-card">
@@ -849,6 +854,12 @@
                     <small class="field-help">Chat ID grup atau pribadi. Gunakan @userinfobot untuk cek.</small>
                   </div>
 
+                  <div class="form-group">
+                    <label>Retensi Log Error (hari)</label>
+                    <input id="configLogRetentionDays" type="number" min="1" max="90" placeholder="60" />
+                    <small class="field-help">Log error otomatis dihapus setelah N hari (1–90). Default: 60.</small>
+                  </div>
+
                   <div class="form-group full-span">
                     <label>Passcode Config Saat Ini</label>
                     <input id="configCurrentPasscode" type="password" placeholder="Wajib untuk menyimpan perubahan" />
@@ -858,6 +869,69 @@
                 <button class="checkout-btn" onclick="saveConfig()">
                   Simpan Config
                 </button>
+              </div>
+
+              <!-- MAINTENANCE MODE -->
+              <div class="section-card config-card">
+                <div class="card-title-row">
+                  <div>
+                    <p class="eyebrow">System</p>
+                    <h2>🔧 Maintenance Mode</h2>
+                  </div>
+                </div>
+                <div class="config-grid">
+                  <div class="form-group full-span">
+                    <label>Pesan Maintenance</label>
+                    <input id="maintenanceReason" type="text" placeholder="Sistem sedang dalam pemeliharaan. Harap tunggu..." />
+                  </div>
+                  <div class="form-group" id="maintenanceStatusBadge" style="display:flex;align-items:center;gap:10px;">
+                    <span id="maintenanceStatusText" style="font-size:14px;color:var(--text-secondary);">Status: memuat...</span>
+                  </div>
+                </div>
+                <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;">
+                  <button class="primary-btn" onclick="toggleMaintenanceMode(true)">🔴 Aktifkan Maintenance</button>
+                  <button class="small-btn" onclick="toggleMaintenanceMode(false)">✅ Nonaktifkan</button>
+                  <button class="small-btn" onclick="doSetupLogTrigger()">⏰ Setup Auto-Cleanup Trigger</button>
+                </div>
+              </div>
+
+              <!-- ERROR LOG VIEWER -->
+              <div class="section-card config-card">
+                <div class="card-title-row">
+                  <div>
+                    <p class="eyebrow">Monitoring</p>
+                    <h2>📋 Error Log</h2>
+                  </div>
+                  <div class="card-actions">
+                    <button class="small-btn" onclick="loadErrorLogs()">🔄 Refresh</button>
+                    <button class="small-btn" onclick="openPurgeLogModal()">🗑️ Purge</button>
+                  </div>
+                </div>
+                <p id="errorLogSummary" style="font-size:13px;color:var(--text-secondary);margin-bottom:10px;">—</p>
+                <div style="overflow-x:auto;">
+                  <table class="data-table" style="font-size:12px;">
+                    <thead><tr><th>Waktu</th><th>Fungsi</th><th>Error</th></tr></thead>
+                    <tbody id="errorLogTableBody"><tr><td colspan="3">Klik Refresh untuk memuat log.</td></tr></tbody>
+                  </table>
+                </div>
+              </div>
+
+              <!-- PURGE LOG MODAL -->
+              <div id="purgeLogModal" class="modal-overlay hidden">
+                <div class="protected-modal" style="max-width:380px;">
+                  <div class="lock-icon">🗑️</div>
+                  <h2>Purge Error Log</h2>
+                  <p style="color:var(--text-secondary);font-size:14px;">Hapus semua log lebih tua dari N hari.</p>
+                  <div class="form-group" style="margin:16px 0;">
+                    <label>Hapus log lebih tua dari (hari)</label>
+                    <input id="purgeRetentionDays" type="number" min="1" max="90" value="60" />
+                  </div>
+                  <p id="purgeLogError" class="error-text"></p>
+                  <div class="modal-actions">
+                    <button class="secondary-btn" onclick="closePurgeLogModal()">Batal</button>
+                    <button class="primary-btn" onclick="submitPurgeLog()">Hapus Log</button>
+                  </div>
+                </div>
               </div>
             </div>
           </section>

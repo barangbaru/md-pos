@@ -292,7 +292,10 @@ function getConfig() {
       // Notifikasi
       reportEmail: POS_toString_(config.REPORT_EMAIL || ''),
       telegramBotToken: POS_toString_(config.TELEGRAM_BOT_TOKEN || ''),
-      telegramChatId: POS_toString_(config.TELEGRAM_CHAT_ID || '')
+      telegramChatId: POS_toString_(config.TELEGRAM_CHAT_ID || ''),
+
+      // Maintenance & Log
+      logRetentionDays: POS_toNumber_(config.LOG_RETENTION_DAYS || 60)
     };
 
     return {
@@ -402,6 +405,11 @@ function updateConfig(payload) {
     }
     if (payload.telegramChatId !== undefined && POS_toString_(payload.telegramChatId).trim()) {
       updates.TELEGRAM_CHAT_ID = POS_toString_(payload.telegramChatId).trim();
+    }
+    if (payload.logRetentionDays !== undefined && payload.logRetentionDays !== '') {
+      const r = POS_toNumber_(payload.logRetentionDays);
+      if (r < 1 || r > 90) throw new Error('Retensi log harus antara 1–90 hari.');
+      updates.LOG_RETENTION_DAYS = r;
     }
 
     POS_updateConfigValues_(updates);
@@ -1202,14 +1210,21 @@ function POS_leftRightText_(left, right, width) {
 
 function POS_errorResponse_(error) {
   const message = error && error.message ? error.message : String(error);
-
   Logger.log('❌ POS Error: ' + message);
+  // Non-blocking: jika log gagal, response utama tetap terkirim
+  try { POS_logError_(POS_extractFnName_(error), message); } catch (e) {}
+  return { success: false, message: message, data: null };
+}
 
-  return {
-    success: false,
-    message: message,
-    data: null
-  };
+/** Ekstrak nama fungsi pemanggil dari stack trace. */
+function POS_extractFnName_(error) {
+  if (!error || !error.stack) return 'unknown';
+  const lines = String(error.stack).split('\n');
+  for (let i = 1; i < lines.length; i++) {
+    const m = /at\s+([A-Za-z_]\w*)/.exec(lines[i]);
+    if (m && m[1] !== 'POS_errorResponse_' && m[1] !== 'POS_extractFnName_') return m[1];
+  }
+  return 'unknown';
 }
 
 /* =====================================================
@@ -1446,6 +1461,144 @@ function POS_buildReportEmailHtml_(storeName, rangeLabel, days, d) {
   html += '<div style="padding:12px 24px;background:#f9fafb;color:#9ca3af;font-size:12px;">Dikirim otomatis oleh ' + storeName + ' POS · ' + POS_nowString_() + '</div>';
   html += '</div>';
   return html;
+}
+
+/* =====================================================
+   ERROR LOG
+===================================================== */
+
+const LOG_HEADERS_ = ['Date', 'Time', 'Function', 'Error', 'Logged_At'];
+
+/**
+ * Catat error ke sheet ERROR_LOG.
+ * Sheet dibuat otomatis jika belum ada.
+ * Maksimum 500 karakter per pesan agar sheet tidak bengkak.
+ */
+function POS_logError_(fnName, message) {
+  const sheet = POS_getOrCreateSheet_(POS_SHEET.ERROR_LOG, LOG_HEADERS_);
+  sheet.appendRow([
+    POS_todayString_(),
+    POS_timeString_(),
+    POS_toString_(fnName).slice(0, 80),
+    POS_toString_(message).slice(0, 500),
+    POS_nowString_()
+  ]);
+}
+
+/**
+ * Hapus log lebih tua dari retentionDays (default 60, max 90, min 1).
+ * Menggunakan bulk read → filter → rewrite agar O(1) write, bukan O(n) deleteRow.
+ * Return: jumlah baris yang dihapus.
+ */
+function POS_purgeOldLogs_(retentionDays) {
+  const days = Math.min(90, Math.max(1, Number(retentionDays) || 60));
+  const cutoff = POS_formatDate_(POS_addDays_(POS_now_(), -days));
+  const sheet = POS_getOrCreateSheet_(POS_SHEET.ERROR_LOG, LOG_HEADERS_);
+  const lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return 0; // kosong atau hanya header
+
+  const data = sheet.getRange(2, 1, lastRow - 1, LOG_HEADERS_.length).getValues();
+  const kept  = data.filter(function(row) {
+    return POS_toString_(row[0]).slice(0, 10) >= cutoff;
+  });
+  const deleted = data.length - kept.length;
+  if (deleted === 0) return 0;
+
+  // Kosongkan baris data lama, tulis kembali yang masih berlaku
+  sheet.getRange(2, 1, lastRow - 1, LOG_HEADERS_.length).clearContent();
+  if (kept.length > 0) {
+    sheet.getRange(2, 1, kept.length, LOG_HEADERS_.length).setValues(kept);
+  }
+  Logger.log('🧹 Purge log: ' + deleted + ' baris dihapus (retensi ' + days + ' hari).');
+  return deleted;
+}
+
+/** Trigger harian — dipanggil GAS time-based trigger. */
+function POS_autoCleanupTrigger_() {
+  const days = POS_toNumber_(POS_getConfigValue_('LOG_RETENTION_DAYS', '60')) || 60;
+  POS_purgeOldLogs_(days);
+}
+
+/** Setup trigger harian jam 03:00 untuk auto-cleanup. Idempotent. */
+function setupLogCleanupTrigger() {
+  try {
+    // Hapus trigger lama agar tidak duplikat
+    ScriptApp.getProjectTriggers().forEach(function(t) {
+      if (t.getHandlerFunction() === 'POS_autoCleanupTrigger_') ScriptApp.deleteTrigger(t);
+    });
+    ScriptApp.newTrigger('POS_autoCleanupTrigger_').timeBased().everyDays(1).atHour(3).create();
+    return { success: true, message: 'Auto-cleanup trigger aktif (setiap hari jam 03:00).' };
+  } catch (e) { return POS_errorResponse_(e); }
+}
+
+/** Ambil log terbaru (default 50 baris terakhir, max 200). */
+function getErrorLogs(payload) {
+  try {
+    const limit = Math.min(200, Math.max(1, Number((payload && payload.limit) || 50)));
+    const sheet = POS_getOrCreateSheet_(POS_SHEET.ERROR_LOG, LOG_HEADERS_);
+    const lastRow = sheet.getLastRow();
+    if (lastRow <= 1) return { success: true, data: { logs: [], total: 0 } };
+
+    const total = lastRow - 1;
+    const startRow = Math.max(2, lastRow - limit + 1);
+    const count = lastRow - startRow + 1;
+    const values = sheet.getRange(startRow, 1, count, LOG_HEADERS_.length).getValues();
+
+    const logs = values.reverse().map(function(row) {
+      return {
+        date: POS_toString_(row[0]),
+        time: POS_toString_(row[1]),
+        fn:   POS_toString_(row[2]),
+        error: POS_toString_(row[3]),
+        loggedAt: POS_toString_(row[4])
+      };
+    });
+    return { success: true, data: { logs: logs, total: total } };
+  } catch (e) { return POS_errorResponse_(e); }
+}
+
+/** Purge manual dengan retensi yang bisa dikonfigurasi. */
+function purgeErrorLogs(payload) {
+  try {
+    const days = Number((payload && payload.retentionDays) || 60);
+    const deleted = POS_purgeOldLogs_(days);
+    return {
+      success: true,
+      message: deleted + ' entri log dihapus (retensi ' + days + ' hari).',
+      data: { deleted: deleted }
+    };
+  } catch (e) { return POS_errorResponse_(e); }
+}
+
+/* =====================================================
+   MAINTENANCE MODE
+===================================================== */
+
+/**
+ * Set maintenance mode. Pakai PropertiesService — tidak baca spreadsheet,
+ * overhead ~microseconds vs ~200ms spreadsheet read.
+ */
+function setMaintenanceMode(payload) {
+  try {
+    const enabled = !!(payload && payload.enabled);
+    const reason  = POS_toString_(payload && payload.reason).trim() || 'Sistem sedang dalam pemeliharaan.';
+    const props = PropertiesService.getScriptProperties();
+    props.setProperty('MAINTENANCE_MODE', enabled ? 'true' : 'false');
+    props.setProperty('MAINTENANCE_REASON', reason);
+    return { success: true, message: 'Maintenance mode ' + (enabled ? 'diaktifkan' : 'dinonaktifkan') + '.', data: { enabled: enabled, reason: reason } };
+  } catch (e) { return POS_errorResponse_(e); }
+}
+
+/** Cek status maintenance — dipanggil frontend saat init. */
+function getMaintenanceStatus() {
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const enabled = props.getProperty('MAINTENANCE_MODE') === 'true';
+    const reason  = props.getProperty('MAINTENANCE_REASON') || '';
+    return { success: true, data: { enabled: enabled, reason: reason } };
+  } catch (e) {
+    return { success: true, data: { enabled: false, reason: '' } };
+  }
 }
 
 function testLogin() {
