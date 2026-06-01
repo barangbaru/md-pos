@@ -509,6 +509,16 @@ function upgradePOSDatabaseSchema() {
     addMissingColumns_(ss, 'THERAPIST_POINTS', ['Point_ID','Date','Time','Therapist_ID','Therapist_Name','Service_Name','Qty','Point_Per_Unit','Total_Point','Amount','Cashier_Name','Notes','Created_At']);
   }
 
+  // ===== Item tambahan (pembukuan terpisah) =====
+  if (!ss.getSheetByName('ADDON_MENU')) {
+    const am = getOrCreateSheet_(ss, 'ADDON_MENU');
+    writeTable_(am, ['Addon_ID', 'Name', 'Price', 'Cost', 'Stock', 'Stock_Status', 'Active', 'Created_At', 'Updated_At'], []);
+  }
+  if (!ss.getSheetByName('ADDON_SALES')) {
+    const as = getOrCreateSheet_(ss, 'ADDON_SALES');
+    writeTable_(as, ['Addon_Sale_ID', 'Transaction_ID', 'Date', 'Time', 'Addon_ID', 'Name', 'Qty', 'Price', 'Cost', 'Amount', 'Gross_Profit', 'Cashier_Name', 'Created_At'], []);
+  }
+
   // ===== Tambah config baru kalau belum ada =====
   ensureConfigRow_(ss, 'SUPERADMIN_PASSCODE', '777777', 'Passcode untuk membuka tab Konsolidasi (superadmin)');
   ensureConfigRow_(ss, 'THERAPIST_PASSCODE', '111111', 'Passcode untuk membuka master terapis & input point');

@@ -17,8 +17,14 @@ const POS_SHEET = {
   THERAPISTS: 'THERAPISTS',
   THERAPIST_POINTS: 'THERAPIST_POINTS',
   CONFIG: 'CONFIG',
-  ERROR_LOG: 'ERROR_LOG'
+  ERROR_LOG: 'ERROR_LOG',
+  ADDON_MENU: 'ADDON_MENU',
+  ADDON_SALES: 'ADDON_SALES'
 };
+
+// Header sheet item tambahan (pembukuan terpisah)
+const ADDON_MENU_HEADERS_ = ['Addon_ID', 'Name', 'Price', 'Cost', 'Stock', 'Stock_Status', 'Active', 'Created_At', 'Updated_At'];
+const ADDON_SALES_HEADERS_ = ['Addon_Sale_ID', 'Transaction_ID', 'Date', 'Time', 'Addon_ID', 'Name', 'Qty', 'Price', 'Cost', 'Amount', 'Gross_Profit', 'Cashier_Name', 'Created_At'];
 
 const POS_STATUS = {
   AVAILABLE: 'Available',

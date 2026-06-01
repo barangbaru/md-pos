@@ -40,6 +40,8 @@
     superadminUnlocked: false,
     therapistFormMode: 'add', // 'add' or 'edit'
     selectedTherapistId: '',  // terapis yang dipilih di POS kasir
+    addons: [],               // master item tambahan aktif
+    addonCart: [],            // item tambahan dalam keranjang
   };
 
   document.addEventListener('DOMContentLoaded', initApp);
@@ -223,10 +225,17 @@
           state.therapists = res.data.therapists.therapists;
         }
 
+        // Muat item tambahan aktif
+        if (res.data.addons && res.data.addons.addons) {
+          state.addons = res.data.addons.addons;
+        }
+
         syncBrand();
         renderCategoryFilter();
         renderMenus();
         renderCart();
+        renderAddonCart();
+        populateAddonPickers();
         updateSummary();
         populatePosTherapistDropdowns();
 
@@ -289,6 +298,7 @@
 
     if (tabName === 'stock') {
       renderStockTable();
+      loadAddonManagement();
     }
 
     if (tabName === 'pengeluaran') {
@@ -711,32 +721,50 @@
     };
   }
 
+  // Total gabungan (layanan + tambahan), dibulatkan ke 100 terdekat.
+  function getCombinedTotal() {
+    const totals = calculateTotals();
+    const combined = totals.roundedTotal + getAddonTotal();
+    return Math.round(combined / 100) * 100;
+  }
+
   function updateSummary() {
     const totals = calculateTotals();
+    const addonTotal = getAddonTotal();
+    const combinedTotal = getCombinedTotal();
 
     if (state.paymentMethod !== 'Cash') {
-      state.paidAmount = totals.roundedTotal;
+      state.paidAmount = combinedTotal;
       syncPaidInputs();
     }
 
     const changeAmount =
       state.paymentMethod === 'Cash'
-        ? Math.max(0, Number(state.paidAmount || 0) - totals.roundedTotal)
+        ? Math.max(0, Number(state.paidAmount || 0) - combinedTotal)
         : 0;
+
+    // Tampilkan/sembunyikan baris item tambahan
+    const showAddon = addonTotal > 0;
+    const addonRow = document.getElementById('summaryAddonRow');
+    const mAddonRow = document.getElementById('mobileSummaryAddonRow');
+    if (addonRow) addonRow.style.display = showAddon ? '' : 'none';
+    if (mAddonRow) mAddonRow.style.display = showAddon ? '' : 'none';
 
     setText('summarySubtotal', formatRupiah(totals.subtotal));
     setText('summaryTax', formatRupiah(totals.taxAmount));
     setText('summaryService', formatRupiah(totals.serviceAmount));
-    setText('summaryTotal', formatRupiah(totals.roundedTotal));
+    setText('summaryAddon', formatRupiah(addonTotal));
+    setText('summaryTotal', formatRupiah(combinedTotal));
     setText('summaryChange', formatRupiah(changeAmount));
 
     setText('mobileSummarySubtotal', formatRupiah(totals.subtotal));
     setText('mobileSummaryTax', formatRupiah(totals.taxAmount));
     setText('mobileSummaryService', formatRupiah(totals.serviceAmount));
-    setText('mobileSummaryTotal', formatRupiah(totals.roundedTotal));
+    setText('mobileSummaryAddon', formatRupiah(addonTotal));
+    setText('mobileSummaryTotal', formatRupiah(combinedTotal));
     setText('mobileSummaryChange', formatRupiah(changeAmount));
 
-    setText('mobileCartTotal', formatRupiah(totals.roundedTotal));
+    setText('mobileCartTotal', formatRupiah(combinedTotal));
 
     renderQuickCashButtons();
   }
@@ -780,18 +808,112 @@
   }
 
   /* =====================================================
+     ITEM TAMBAHAN (ADDON) — POS KASIR
+  ===================================================== */
+
+  function populateAddonPickers() {
+    const active = (state.addons || []).filter(function(a) { return a.active && Number(a.stock || 0) > 0; });
+    const opts = '<option value="">-- Pilih item --</option>' + active.map(function(a) {
+      return '<option value="' + escapeAttr(a.addonId) + '">' + escapeHtml(a.name) + ' (' + formatRupiah(a.price) + ') · stok ' + Number(a.stock || 0) + '</option>';
+    }).join('');
+    const d = document.getElementById('addonPicker');
+    const m = document.getElementById('mobileAddonPicker');
+    if (d) d.innerHTML = opts;
+    if (m) m.innerHTML = opts;
+  }
+
+  function addAddonFromPicker(isMobile) {
+    const sel = document.getElementById(isMobile ? 'mobileAddonPicker' : 'addonPicker');
+    const addonId = sel ? sel.value : '';
+    if (!addonId) { showToast('Pilih item tambahan dulu.', 'error'); return; }
+    addToAddonCart(addonId);
+    if (sel) sel.value = '';
+  }
+
+  function addToAddonCart(addonId) {
+    const addon = state.addons.find(function(a) { return a.addonId === addonId; });
+    if (!addon) { showToast('Item tambahan tidak ditemukan.', 'error'); return; }
+    if (Number(addon.stock || 0) <= 0) { showToast('Item tambahan habis.', 'error'); return; }
+    const existing = state.addonCart.find(function(i) { return i.addonId === addonId; });
+    if (existing) {
+      if (existing.qty + 1 > Number(addon.stock || 0)) { showToast('Stok ' + addon.name + ' tidak cukup.', 'error'); return; }
+      existing.qty += 1;
+    } else {
+      state.addonCart.push({ addonId: addon.addonId, name: addon.name, price: Number(addon.price || 0), stock: Number(addon.stock || 0), qty: 1 });
+    }
+    renderAddonCart();
+    updateSummary();
+  }
+
+  function increaseAddonQty(addonId) {
+    const item = state.addonCart.find(function(i) { return i.addonId === addonId; });
+    const addon = state.addons.find(function(a) { return a.addonId === addonId; });
+    if (!item || !addon) return;
+    if (item.qty + 1 > Number(addon.stock || 0)) { showToast('Stok tidak cukup. Sisa: ' + addon.stock, 'error'); return; }
+    item.qty += 1;
+    renderAddonCart();
+    updateSummary();
+  }
+
+  function decreaseAddonQty(addonId) {
+    const item = state.addonCart.find(function(i) { return i.addonId === addonId; });
+    if (!item) return;
+    item.qty -= 1;
+    if (item.qty <= 0) { removeFromAddonCart(addonId); return; }
+    renderAddonCart();
+    updateSummary();
+  }
+
+  function removeFromAddonCart(addonId) {
+    state.addonCart = state.addonCart.filter(function(i) { return i.addonId !== addonId; });
+    renderAddonCart();
+    updateSummary();
+  }
+
+  function getAddonCartHtml() {
+    if (state.addonCart.length === 0) return '';
+    return state.addonCart.map(function(item) {
+      const amount = Number(item.price || 0) * Number(item.qty || 0);
+      return '<div class="cart-item" style="padding:6px 0;">'
+        + '<div><h4 style="font-size:13px;">' + escapeHtml(item.name) + '</h4>'
+        + '<p style="font-size:12px;">' + formatRupiah(item.price) + ' x ' + item.qty + ' = <strong>' + formatRupiah(amount) + '</strong></p>'
+        + '<button class="remove-btn" onclick="removeFromAddonCart(\'' + escapeAttr(item.addonId) + '\')">Hapus</button></div>'
+        + '<div class="qty-control"><button class="qty-btn" onclick="decreaseAddonQty(\'' + escapeAttr(item.addonId) + '\')">−</button>'
+        + '<span class="qty-number">' + item.qty + '</span>'
+        + '<button class="qty-btn" onclick="increaseAddonQty(\'' + escapeAttr(item.addonId) + '\')">+</button></div></div>';
+    }).join('');
+  }
+
+  function renderAddonCart() {
+    const html = getAddonCartHtml();
+    const d = document.getElementById('addonCartItems');
+    const m = document.getElementById('mobileAddonCartItems');
+    if (d) d.innerHTML = html;
+    if (m) m.innerHTML = html;
+  }
+
+  function getAddonTotal() {
+    return state.addonCart.reduce(function(s, i) { return s + Number(i.price || 0) * Number(i.qty || 0); }, 0);
+  }
+
+  function resetAddonCart() {
+    state.addonCart = [];
+    renderAddonCart();
+  }
+
+  /* =====================================================
      CHECKOUT
   ===================================================== */
 
   function handleCheckout() {
-  if (state.cart.length === 0) {
+  if (state.cart.length === 0 && state.addonCart.length === 0) {
     showToast('Cart masih kosong.', 'error');
     return;
   }
 
-  const totals = calculateTotals();
+  const combinedTotal = getCombinedTotal();
 
-  if (state.paymentMethod === 'Cash' && Number(state.paidAmount || 0) < totals.roundedTotal) {
+  if (state.paymentMethod === 'Cash' && Number(state.paidAmount || 0) < combinedTotal) {
     showToast('Uang bayar kurang dari total pembayaran.', 'error');
     return;
   }
@@ -799,19 +921,22 @@
   const payload = {
     cashierName: state.cashierName,
     paymentMethod: state.paymentMethod,
-    paidAmount: state.paymentMethod === 'Cash' ? state.paidAmount : totals.roundedTotal,
+    paidAmount: state.paymentMethod === 'Cash' ? state.paidAmount : combinedTotal,
     items: state.cart.map(function (item) {
       return {
         menuId: item.menuId,
         qty: item.qty
       };
     }),
+    addonItems: state.addonCart.map(function (item) {
+      return { addonId: item.addonId, qty: item.qty };
+    }),
     therapistId: state.selectedTherapistId || ''   // terapis yang handle transaksi ini
   };
 
   if (state.paymentMethod === 'QRIS' || state.paymentMethod === 'Transfer') {
     state.pendingCheckoutPayload = payload;
-    openNonCashPaymentModal(state.paymentMethod, totals.roundedTotal);
+    openNonCashPaymentModal(state.paymentMethod, combinedTotal);
     return;
   }
 
@@ -977,8 +1102,7 @@ function renderQuickCashButtons() {
 
   if (!desktop || !mobile) return;
 
-  const totals = calculateTotals();
-  const total = Number(totals.roundedTotal || 0);
+  const total = Number(getCombinedTotal() || 0);
 
   if (total <= 0 || state.paymentMethod !== 'Cash') {
     desktop.innerHTML = '';
@@ -1185,6 +1309,137 @@ function refreshAfterStockUpdate() {
     })
     .withFailureHandler(onFail_('refreshAfterStockUpdate'))
     .getMenus();
+}
+
+/* =====================================================
+   ITEM TAMBAHAN — MANAGEMENT (Tab Stock)
+===================================================== */
+
+function loadAddonManagement() {
+  const tbody = document.getElementById('addonTableBody');
+  if (tbody) tbody.innerHTML = '<tr><td colspan="7">Memuat...</td></tr>';
+  google.script.run
+    .withSuccessHandler(function(res) {
+      if (!res.success) { if (tbody) tbody.innerHTML = '<tr><td colspan="7">' + escapeHtml(res.message) + '</td></tr>'; return; }
+      state.addons = (res.data && res.data.addons) || [];
+      renderAddonTable();
+      populateAddonPickers();
+    })
+    .withFailureHandler(onFail_('loadAddonManagement'))
+    .getAddons({});
+}
+
+function renderAddonTable() {
+  const tbody = document.getElementById('addonTableBody');
+  if (!tbody) return;
+  const data = state.addons || [];
+  if (data.length === 0) { tbody.innerHTML = '<tr><td colspan="7">Belum ada item tambahan.</td></tr>'; return; }
+  tbody.innerHTML = data.map(function(a) {
+    const badge = a.stockStatus === 'Out of Stock' ? '<span class="stock-badge stock-out">● Habis</span>'
+      : (a.stockStatus === 'Low Stock' ? '<span class="stock-badge stock-low">● Sedikit</span>' : '<span class="stock-badge stock-available">● Ready</span>');
+    const statusTxt = a.active ? '<span class="status-active">Aktif</span>' : '<span class="status-inactive">Non-aktif</span>';
+    const toggleBtn = a.active
+      ? '<button class="small-btn" onclick="toggleAddonActive(\'' + escapeAttr(a.addonId) + '\', false)">Nonaktifkan</button>'
+      : '<button class="small-btn" onclick="toggleAddonActive(\'' + escapeAttr(a.addonId) + '\', true)">Aktifkan</button>';
+    return '<tr>'
+      + '<td><strong>' + escapeHtml(a.name) + '</strong><br><small>' + escapeHtml(a.addonId) + '</small></td>'
+      + '<td>' + formatRupiah(a.price) + '</td>'
+      + '<td>' + formatRupiah(a.cost) + '</td>'
+      + '<td><strong>' + Number(a.stock || 0) + '</strong> ' + badge + '</td>'
+      + '<td>' + statusTxt + '</td>'
+      + '<td><div class="stock-actions">'
+      + '<input id="addonStockInput-' + escapeAttr(a.addonId) + '" type="number" min="0" placeholder="Qty" style="width:70px;" />'
+      + '<button class="stock-action-btn add" onclick="updateAddonStockUI(\'' + escapeAttr(a.addonId) + '\',\'ADD\')">+</button>'
+      + '<button class="stock-action-btn reduce" onclick="updateAddonStockUI(\'' + escapeAttr(a.addonId) + '\',\'REDUCE\')">−</button>'
+      + '<button class="stock-action-btn" onclick="updateAddonStockUI(\'' + escapeAttr(a.addonId) + '\',\'SET\')">Set</button>'
+      + '</div></td>'
+      + '<td><button class="small-btn" onclick="editAddon(\'' + escapeAttr(a.addonId) + '\')">Edit</button> ' + toggleBtn + '</td>'
+      + '</tr>';
+  }).join('');
+}
+
+function openAddonForm() {
+  document.getElementById('addonFormCard').style.display = '';
+  document.getElementById('addonFormTitle').textContent = 'Tambah Item Tambahan';
+  setInputValue('addonFormId', '');
+  setInputValue('addonFormName', '');
+  setInputValue('addonFormPrice', '');
+  setInputValue('addonFormCost', '');
+  setInputValue('addonFormStock', '0');
+  setInputValue('addonFormActive', 'true');
+}
+
+function closeAddonForm() {
+  document.getElementById('addonFormCard').style.display = 'none';
+}
+
+function editAddon(addonId) {
+  const a = (state.addons || []).find(function(x) { return x.addonId === addonId; });
+  if (!a) return;
+  document.getElementById('addonFormCard').style.display = '';
+  document.getElementById('addonFormTitle').textContent = 'Edit Item Tambahan';
+  setInputValue('addonFormId', a.addonId);
+  setInputValue('addonFormName', a.name);
+  setInputValue('addonFormPrice', formatRupiah(a.price));
+  setInputValue('addonFormCost', formatRupiah(a.cost));
+  setInputValue('addonFormStock', Number(a.stock || 0));
+  setInputValue('addonFormActive', a.active ? 'true' : 'false');
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+function saveAddonForm() {
+  const name = getInputValue('addonFormName');
+  if (!name) { showToast('Nama item wajib diisi.', 'error'); return; }
+  const payload = {
+    addonId: getInputValue('addonFormId'),
+    name: name,
+    price: parseRupiahInput(getInputValue('addonFormPrice')),
+    cost: parseRupiahInput(getInputValue('addonFormCost')),
+    stock: Number(getInputValue('addonFormStock')) || 0,
+    active: getInputValue('addonFormActive') === 'true'
+  };
+  setLoading(true, 'Menyimpan item tambahan...');
+  google.script.run
+    .withSuccessHandler(function(res) {
+      setLoading(false);
+      if (!res.success) { onResError_('saveAddonForm', res); return; }
+      showToast(res.message || 'Item tambahan disimpan.');
+      closeAddonForm();
+      loadAddonManagement();
+    })
+    .withFailureHandler(onFail_('saveAddonForm'))
+    .saveAddon(payload);
+}
+
+function updateAddonStockUI(addonId, mode) {
+  const input = document.getElementById('addonStockInput-' + addonId);
+  const val = Number(input && input.value ? input.value : 0);
+  if (val < 0 || !Number.isFinite(val)) { showToast('Input stock tidak valid.', 'error'); return; }
+  if (mode !== 'SET' && val <= 0) { showToast('Qty harus > 0.', 'error'); return; }
+  setLoading(true, 'Update stock...');
+  google.script.run
+    .withSuccessHandler(function(res) {
+      setLoading(false);
+      if (!res.success) { onResError_('updateAddonStockUI', res); return; }
+      showToast('Stock item tambahan diperbarui.');
+      if (input) input.value = '';
+      loadAddonManagement();
+    })
+    .withFailureHandler(onFail_('updateAddonStockUI'))
+    .updateAddonStock({ addonId: addonId, mode: mode, stockValue: val });
+}
+
+function toggleAddonActive(addonId, active) {
+  setLoading(true, active ? 'Mengaktifkan...' : 'Menonaktifkan...');
+  google.script.run
+    .withSuccessHandler(function(res) {
+      setLoading(false);
+      if (!res.success) { onResError_('toggleAddonActive', res); return; }
+      showToast(res.message);
+      loadAddonManagement();
+    })
+    .withFailureHandler(onFail_('toggleAddonActive'))
+    .setAddonActive({ addonId: addonId, active: active });
 }
 
 /* =====================================================
@@ -1768,6 +2023,26 @@ function renderDashboard() {
   renderSharingExpenses(data.sharingExpenses || []);
   renderPersonalExpenses(data.personalExpenses || []);
   renderMonthlySales(data.monthlySales || [], data.monthlySummary || {});
+  renderAddonSummary(data.addonSummary || {});
+}
+
+function renderAddonSummary(addon) {
+  setText('addonRevenue', formatRupiah(addon.revenue || 0));
+  setText('addonCost', formatRupiah(addon.cost || 0));
+  setText('addonProfit', formatRupiah(addon.profit || 0));
+  setText('addonQty', Number(addon.qty || 0).toLocaleString('id-ID') + ' pcs');
+  const tbody = document.getElementById('addonTopTableBody');
+  if (!tbody) return;
+  const top = addon.topAddons || [];
+  if (top.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="3">Belum ada penjualan item tambahan.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = top.map(function(t, i) {
+    return '<tr><td>' + (i + 1) + '. ' + escapeHtml(t.name) + '</td>'
+      + '<td>' + Number(t.qty || 0) + ' pcs</td>'
+      + '<td>' + formatRupiah(t.amount) + '</td></tr>';
+  }).join('');
 }
 
 function renderRevenueChart(items) {
@@ -2811,6 +3086,7 @@ function buildPaymentReceiptHtml(receipt) {
   const store = receipt.store || {};
   const trx = receipt.transaction || {};
   const items = receipt.items || [];
+  const addonItems = receipt.addonItems || [];
   const totals = receipt.totals || {};
 
   const itemHtml = items.map(function (item) {
@@ -2824,6 +3100,22 @@ function buildPaymentReceiptHtml(receipt) {
       </div>
     `;
   }).join('');
+
+  const hasAddon = addonItems.length > 0;
+  const addonHtml = hasAddon ? (`
+    <div class="receipt-line"></div>
+    <div class="receipt-bold">Item Tambahan:</div>
+    ` + addonItems.map(function (item) {
+    return `
+      <div class="receipt-item">
+        <div>${escapeHtml(item.name)}</div>
+        <div class="receipt-row">
+          <span>${Number(item.qty || 0)} x ${formatRupiah(item.price)}</span>
+          <strong>${formatRupiah(item.amount)}</strong>
+        </div>
+      </div>
+    `;
+  }).join('')) : '';
 
   return `
     <div class="receipt-center receipt-bold">${escapeHtml(store.name || 'Kedai Kopi')}</div>
@@ -2840,9 +3132,11 @@ function buildPaymentReceiptHtml(receipt) {
     <div class="receipt-line"></div>
 
     ${itemHtml}
+    ${addonHtml}
 
     <div class="receipt-line"></div>
 
+    ${items.length > 0 ? `
     <div class="receipt-row">
       <span>Subtotal</span>
       <strong>${formatRupiah(totals.subtotal)}</strong>
@@ -2858,9 +3152,20 @@ function buildPaymentReceiptHtml(receipt) {
       <strong>${formatRupiah(totals.serviceAmount)}</strong>
     </div>
 
+    <div class="receipt-row">
+      <span>Subtotal Layanan</span>
+      <strong>${formatRupiah(totals.roundedTotal)}</strong>
+    </div>` : ''}
+
+    ${hasAddon ? `
+    <div class="receipt-row">
+      <span>Item Tambahan</span>
+      <strong>${formatRupiah(totals.addonTotal)}</strong>
+    </div>` : ''}
+
     <div class="receipt-row receipt-bold">
       <span>Total</span>
-      <strong>${formatRupiah(totals.roundedTotal)}</strong>
+      <strong>${formatRupiah(totals.combinedTotal != null ? totals.combinedTotal : totals.roundedTotal)}</strong>
     </div>
 
     <div class="receipt-row">
@@ -2918,6 +3223,7 @@ function buildPaymentReceiptText(receipt) {
   const store = receipt.store || {};
   const trx = receipt.transaction || {};
   const items = receipt.items || [];
+  const addonItems = receipt.addonItems || [];
   const totals = receipt.totals || {};
 
   const lines = [];
@@ -2948,11 +3254,29 @@ function buildPaymentReceiptText(receipt) {
     ));
   });
 
+  if (addonItems.length > 0) {
+    lines.push('-- Item Tambahan --');
+    addonItems.forEach(function (item) {
+      lines.push(String(item.name || ''));
+      lines.push(leftRightText(
+        Number(item.qty || 0) + ' x ' + formatRupiah(item.price),
+        formatRupiah(item.amount),
+        32
+      ));
+    });
+  }
+
   lines.push('--------------------------------');
-  lines.push(leftRightText('Subtotal', formatRupiah(totals.subtotal), 32));
-  lines.push(leftRightText('Tax ' + Number(totals.taxRate || 0) + '%', formatRupiah(totals.taxAmount), 32));
-  lines.push(leftRightText('Service ' + Number(totals.serviceRate || 0) + '%', formatRupiah(totals.serviceAmount), 32));
-  lines.push(leftRightText('Total', formatRupiah(totals.roundedTotal), 32));
+  if (items.length > 0) {
+    lines.push(leftRightText('Subtotal', formatRupiah(totals.subtotal), 32));
+    lines.push(leftRightText('Tax ' + Number(totals.taxRate || 0) + '%', formatRupiah(totals.taxAmount), 32));
+    lines.push(leftRightText('Service ' + Number(totals.serviceRate || 0) + '%', formatRupiah(totals.serviceAmount), 32));
+    lines.push(leftRightText('Subtotal Layanan', formatRupiah(totals.roundedTotal), 32));
+  }
+  if (addonItems.length > 0) {
+    lines.push(leftRightText('Item Tambahan', formatRupiah(totals.addonTotal), 32));
+  }
+  lines.push(leftRightText('Total', formatRupiah(totals.combinedTotal != null ? totals.combinedTotal : totals.roundedTotal), 32));
   lines.push(leftRightText('Bayar', formatRupiah(totals.paidAmount), 32));
   lines.push(leftRightText('Kembali', formatRupiah(totals.changeAmount), 32));
   lines.push('--------------------------------');
@@ -3185,10 +3509,16 @@ function submitCheckout(payload) {
       state.cart = [];
       state.paidAmount = 0;
       state.paymentMethod = 'Cash';
+      resetAddonCart();
 
       if (res.data && res.data.menus) {
         state.menus = res.data.menus.menus || [];
         state.categories = res.data.menus.categories || [];
+      }
+      // Refresh stok item tambahan
+      if (res.data && res.data.addons && res.data.addons.addons) {
+        state.addons = res.data.addons.addons;
+        populateAddonPickers();
       }
 
       syncPaidInputs();

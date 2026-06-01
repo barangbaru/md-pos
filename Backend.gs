@@ -40,6 +40,7 @@ function getInitialData() {
     const config = getConfig();
     const menus = getMenus();
     const therapists = getTherapists({ activeOnly: true });
+    const addons = getAddons({ activeOnly: true });
 
     return {
       success: true,
@@ -47,7 +48,8 @@ function getInitialData() {
       data: {
         config: config.data,
         menus: menus.data,
-        therapists: therapists.data   // hanya terapis aktif, tanpa passcode
+        therapists: therapists.data,  // hanya terapis aktif, tanpa passcode
+        addons: addons.data           // item tambahan aktif (pembukuan terpisah)
       }
     };
   } catch (error) {
@@ -437,7 +439,13 @@ function checkoutOrder(payload) {
     const cashierName = POS_toString_(payload && payload.cashierName).trim();
     const paymentMethod = POS_validatePaymentMethod_(payload && payload.paymentMethod);
     const paidAmountInput = POS_toNumber_(payload && payload.paidAmount);
-    const cartItems = POS_validateCartItems_(payload && payload.items);
+
+    // Item layanan (service) & item tambahan (addon) — boleh salah satu kosong,
+    // tapi tidak boleh dua-duanya kosong.
+    const rawItems = (payload && Array.isArray(payload.items)) ? payload.items : [];
+    const rawAddons = (payload && Array.isArray(payload.addonItems)) ? payload.addonItems : [];
+    if (rawItems.length === 0 && rawAddons.length === 0) throw new Error('Cart masih kosong.');
+    const cartItems = rawItems.length > 0 ? POS_validateCartItems_(rawItems) : [];
 
     if (!cashierName) {
       throw new Error('Nama kasir tidak ditemukan. Silakan login ulang.');
@@ -496,17 +504,61 @@ function checkoutOrder(payload) {
 
     const totals = POS_calculateTotals_(normalizedItems, taxRate, serviceRate);
 
+    // ── Proses item tambahan (addon) — pembukuan terpisah ─────────────────
+    // Stok addon dikelola di sheet ADDON_MENU; penjualan dicatat di ADDON_SALES.
+    const normalizedAddons = [];
+    let addonSheet = null;
+    let addonRowMap = {};
+    if (rawAddons.length > 0) {
+      addonSheet = POS_getOrCreateSheet_(POS_SHEET.ADDON_MENU, ADDON_MENU_HEADERS_);
+      const aHeaders = POS_getHeaders_(addonSheet);
+      const aHeaderMap = POS_getHeaderMap_(aHeaders);
+      const aLastRow = addonSheet.getLastRow();
+      if (aLastRow >= 2) {
+        const aValues = addonSheet.getRange(2, 1, aLastRow - 1, aHeaders.length).getValues();
+        for (let i = 0; i < aValues.length; i++) {
+          const id = POS_toString_(aValues[i][aHeaderMap.Addon_ID]);
+          if (id) addonRowMap[id] = { rowNumber: i + 2, row: aValues[i], headerMap: aHeaderMap };
+        }
+      }
+      rawAddons.forEach(a => {
+        const addonId = POS_toString_(a.addonId).trim();
+        const qty = POS_toNumber_(a.qty);
+        if (!addonId) throw new Error('Addon ID tidak valid.');
+        if (qty <= 0) throw new Error('Qty item tambahan harus > 0.');
+        const t = addonRowMap[addonId];
+        if (!t) throw new Error('Item tambahan tidak ditemukan: ' + addonId);
+        const hm = t.headerMap;
+        const name = POS_toString_(t.row[hm.Name]);
+        const price = POS_toNumber_(t.row[hm.Price]);
+        const cost = POS_toNumber_(t.row[hm.Cost]);
+        const stock = POS_toNumber_(t.row[hm.Stock]);
+        const active = POS_toBoolean_(t.row[hm.Active]);
+        if (!active) throw new Error(name + ' (tambahan) tidak aktif.');
+        if (stock <= 0) throw new Error(name + ' (tambahan) sedang habis.');
+        if (qty > stock) throw new Error(name + ' (tambahan) stock tidak cukup. Sisa: ' + stock);
+        normalizedAddons.push({
+          addonId: addonId, name: name, qty: qty, price: price,
+          cost: cost * qty, amount: price * qty, grossProfit: (price - cost) * qty,
+          currentStock: stock, rowNumber: t.rowNumber, headerMap: hm
+        });
+      });
+    }
+    const addonTotal = normalizedAddons.reduce((s, a) => s + a.amount, 0);
+
+    // ── Total gabungan untuk pembayaran (layanan + tambahan) ──────────────
+    const combinedGrand = totals.roundedTotal + addonTotal;
+    const combinedRounded = POS_roundToNearest100_(combinedGrand);
+
     let paidAmount = paidAmountInput;
     let changeAmount = 0;
-
     if (paymentMethod === POS_PAYMENT.CASH) {
-      if (paidAmount < totals.roundedTotal) {
+      if (paidAmount < combinedRounded) {
         throw new Error('Uang bayar kurang dari total pembayaran.');
       }
-
-      changeAmount = paidAmount - totals.roundedTotal;
+      changeAmount = paidAmount - combinedRounded;
     } else {
-      paidAmount = totals.roundedTotal;
+      paidAmount = combinedRounded;
       changeAmount = 0;
     }
 
@@ -515,27 +567,29 @@ function checkoutOrder(payload) {
     const time = POS_timeString_();
     const now = POS_nowString_();
 
-    const salesRow = {
-      Transaction_ID: transactionId,
-      Date: today,
-      Time: time,
-      Cashier_Name: cashierName,
-      Subtotal: totals.subtotal,
-      Tax_Rate: totals.taxRate,
-      Tax_Amount: totals.taxAmount,
-      Service_Rate: totals.serviceRate,
-      Service_Amount: totals.serviceAmount,
-      Grand_Total: totals.grandTotal,
-      Payment_Method: paymentMethod,
-      Paid_Amount: paidAmount,
-      Change_Amount: changeAmount,
-      Rounded_Total: totals.roundedTotal,
-      Status: 'PAID',
-      Created_At: now
-    };
-
-    const saleItemRows = normalizedItems.map(item => {
-      return {
+    // SALES (buku layanan) — hanya ditulis jika ada item layanan.
+    // Paid/Change di buku layanan = nilai layanan saja (pembukuan bersih),
+    // pembayaran gabungan & kembalian riil ada di receipt.
+    if (normalizedItems.length > 0) {
+      const salesRow = {
+        Transaction_ID: transactionId,
+        Date: today,
+        Time: time,
+        Cashier_Name: cashierName,
+        Subtotal: totals.subtotal,
+        Tax_Rate: totals.taxRate,
+        Tax_Amount: totals.taxAmount,
+        Service_Rate: totals.serviceRate,
+        Service_Amount: totals.serviceAmount,
+        Grand_Total: totals.grandTotal,
+        Payment_Method: paymentMethod,
+        Paid_Amount: totals.roundedTotal,
+        Change_Amount: 0,
+        Rounded_Total: totals.roundedTotal,
+        Status: 'PAID',
+        Created_At: now
+      };
+      const saleItemRows = normalizedItems.map(item => ({
         Transaction_ID: transactionId,
         Menu_ID: item.menuId,
         Menu_Name: item.menuName,
@@ -546,11 +600,40 @@ function checkoutOrder(payload) {
         Amount: item.amount,
         Gross_Profit: item.grossProfit,
         Created_At: now
-      };
-    });
+      }));
+      POS_appendObjects_(POS_SHEET.SALES, [salesRow]);
+      POS_appendObjects_(POS_SHEET.SALE_ITEMS, saleItemRows);
+    }
 
-    POS_appendObjects_(POS_SHEET.SALES, [salesRow]);
-    POS_appendObjects_(POS_SHEET.SALE_ITEMS, saleItemRows);
+    // ADDON_SALES (buku tambahan, terpisah)
+    if (normalizedAddons.length > 0) {
+      const addonSaleRows = normalizedAddons.map((a, idx) => ({
+        Addon_Sale_ID: POS_generateAddonSaleId_(idx),
+        Transaction_ID: transactionId,
+        Date: today,
+        Time: time,
+        Addon_ID: a.addonId,
+        Name: a.name,
+        Qty: a.qty,
+        Price: a.price,
+        Cost: a.cost,
+        Amount: a.amount,
+        Gross_Profit: a.grossProfit,
+        Cashier_Name: cashierName,
+        Created_At: now
+      }));
+      POS_appendObjects_(POS_SHEET.ADDON_SALES, addonSaleRows);
+
+      // Kurangi stok addon
+      normalizedAddons.forEach(a => {
+        const hm = a.headerMap;
+        const newStock = a.currentStock - a.qty;
+        const newStatus = POS_computeStockStatus_(newStock);
+        addonSheet.getRange(a.rowNumber, hm.Stock + 1).setValue(newStock);
+        addonSheet.getRange(a.rowNumber, hm.Stock_Status + 1).setValue(newStatus);
+        addonSheet.getRange(a.rowNumber, hm.Updated_At + 1).setValue(now);
+      });
+    }
     POS_invalidateDashboardCache_();
 
     // Batch stock update: 1 setValues per item (3 kolom sekaligus) vs 3 setValue terpisah
@@ -597,6 +680,13 @@ function checkoutOrder(payload) {
           amount: item.amount
         };
       }),
+      addonItems: normalizedAddons.map(a => ({
+        addonId: a.addonId,
+        name: a.name,
+        qty: a.qty,
+        price: a.price,
+        amount: a.amount
+      })),
       totals: {
         subtotal: totals.subtotal,
         taxRate: totals.taxRate,
@@ -604,7 +694,9 @@ function checkoutOrder(payload) {
         serviceRate: totals.serviceRate,
         serviceAmount: totals.serviceAmount,
         grandTotal: totals.grandTotal,
-        roundedTotal: totals.roundedTotal,
+        roundedTotal: totals.roundedTotal,        // total layanan (untuk point terapis)
+        addonTotal: addonTotal,                    // total item tambahan
+        combinedTotal: combinedRounded,            // total bayar gabungan
         paidAmount: paidAmount,
         changeAmount: changeAmount
       }
@@ -616,7 +708,8 @@ function checkoutOrder(payload) {
       data: {
         transactionId: transactionId,
         receipt: receiptData,
-        menus: getMenus().data
+        menus: getMenus().data,
+        addons: getAddons({ activeOnly: true }).data
       }
     };
   } catch (error) {
@@ -858,6 +951,50 @@ function getDashboardData(filter) {
       return t === 'Personal' || t === 'Therapist';
     }));
 
+    // ── PEMBUKUAN TAMBAHAN (ADDON) — terpisah dari layanan ────────────────
+    let addonSales = [];
+    try {
+      addonSales = POS_readObjects_(POS_SHEET.ADDON_SALES)
+        .filter(r => POS_toString_(r.Addon_Sale_ID))
+        .filter(r => POS_isDateInRange_(r.Date, range.startDate, range.endDate));
+    } catch (e) { addonSales = []; } // sheet belum ada = belum ada penjualan tambahan
+    const addonRevenue = addonSales.reduce((s, r) => s + POS_toNumber_(r.Amount), 0);
+    const addonCost = addonSales.reduce((s, r) => s + POS_toNumber_(r.Cost), 0);
+    const addonProfit = addonSales.reduce((s, r) => s + POS_toNumber_(r.Gross_Profit), 0);
+    const addonQty = addonSales.reduce((s, r) => s + POS_toNumber_(r.Qty), 0);
+    // Top item tambahan (by qty)
+    const addonMap = {};
+    addonSales.forEach(r => {
+      const name = POS_toString_(r.Name) || '-';
+      if (!addonMap[name]) addonMap[name] = { name: name, qty: 0, amount: 0 };
+      addonMap[name].qty += POS_toNumber_(r.Qty);
+      addonMap[name].amount += POS_toNumber_(r.Amount);
+    });
+    const topAddons = Object.values(addonMap)
+      .sort((a, b) => b.qty !== a.qty ? b.qty - a.qty : b.amount - a.amount)
+      .slice(0, 5);
+    // Breakdown harian addon
+    const addonByDate = {};
+    addonSales.forEach(r => {
+      const d = POS_toString_(r.Date).slice(0, 10);
+      if (!addonByDate[d]) addonByDate[d] = { date: d, revenue: 0, cost: 0, profit: 0, qty: 0, count: 0 };
+      addonByDate[d].revenue += POS_toNumber_(r.Amount);
+      addonByDate[d].cost += POS_toNumber_(r.Cost);
+      addonByDate[d].profit += POS_toNumber_(r.Gross_Profit);
+      addonByDate[d].qty += POS_toNumber_(r.Qty);
+      addonByDate[d].count += 1;
+    });
+    const addonDaily = rangeDates.map(d => addonByDate[d] || { date: d, revenue: 0, cost: 0, profit: 0, qty: 0, count: 0 });
+    const addonSummary = {
+      revenue: addonRevenue,
+      cost: addonCost,
+      profit: addonProfit,
+      qty: addonQty,
+      count: addonSales.length,
+      topAddons: topAddons,
+      daily: addonDaily
+    };
+
     const result = {
       success: true,
       message: 'Dashboard berhasil dimuat.',
@@ -892,7 +1029,8 @@ function getDashboardData(filter) {
         monthlySales: rangeDailyBreakdown,
         monthlySummary: rangeSummary,
         sharingExpenses: sharingExpenses,
-        personalExpenses: personalExpenses
+        personalExpenses: personalExpenses,
+        addonSummary: addonSummary
       }
     };
     // Simpan ke cache (60 detik)
@@ -1329,6 +1467,20 @@ function sendReport(payload) {
       });
     }
 
+    // Pembukuan tambahan (terpisah)
+    const addon = data.addonSummary || {};
+    if ((addon.count || 0) > 0) {
+      lines.push(sep);
+      lines.push('🥤 <b>Pembukuan Tambahan (Terpisah)</b>:');
+      lines.push('   Omzet: ' + POS_formatRupiah_(addon.revenue || 0));
+      lines.push('   Modal: ' + POS_formatRupiah_(addon.cost || 0));
+      lines.push('   Laba: ' + POS_formatRupiah_(addon.profit || 0));
+      lines.push('   Item terjual: ' + Number(addon.qty || 0) + ' pcs');
+      (addon.topAddons || []).forEach(function(t, i) {
+        lines.push('   ' + (i + 1) + '. ' + t.name + ' — ' + t.qty + ' pcs (' + POS_formatRupiah_(t.amount) + ')');
+      });
+    }
+
     lines.push(sep);
     lines.push('🕐 Dikirim: ' + POS_nowString_());
 
@@ -1337,7 +1489,8 @@ function sendReport(payload) {
     // ── Format HTML untuk Email ───────────────────────────────────────────
     const emailHtml = POS_buildReportEmailHtml_(storeName, rangeLabel, days, {
       omzet, operasional, kasbon, labaTerapis, labaInvestor1, labaInvestor2,
-      transaksi, sisaInvestor, payment, topTherapists, sharingExp, personalExp
+      transaksi, sisaInvestor, payment, topTherapists, sharingExp, personalExp,
+      addon: addon
     });
 
     const emailSubject = '[' + storeName + '] Laporan ' + rangeLabel;
@@ -1456,6 +1609,19 @@ function POS_buildReportEmailHtml_(storeName, rangeLabel, days, d) {
     html += section('💳 Detail Kasbon');
     d.personalExp.forEach(function(e) {
       html += row(e.cashierName, POS_formatRupiah_(e.amount), false);
+    });
+  }
+
+  // Pembukuan tambahan (terpisah)
+  const addon = d.addon || {};
+  if ((addon.count || 0) > 0) {
+    html += section('🥤 Pembukuan Tambahan (Terpisah)');
+    html += row('Omzet Tambahan', POS_formatRupiah_(addon.revenue || 0), true);
+    html += row('Modal', POS_formatRupiah_(addon.cost || 0), false);
+    html += row('Laba Tambahan', POS_formatRupiah_(addon.profit || 0), true);
+    html += row('Item Terjual', Number(addon.qty || 0) + ' pcs', false);
+    (addon.topAddons || []).forEach(function(t, i) {
+      html += row((i+1) + '. ' + t.name, t.qty + ' pcs (' + POS_formatRupiah_(t.amount) + ')', false);
     });
   }
 
@@ -1674,9 +1840,203 @@ function POS_buildDashboardPdfHtml_(storeName, data, expenseDetail) {
   });
   html += '</tbody></table>';
 
+  // Pembukuan tambahan (addon) — terpisah
+  const addon = data.addonSummary || {};
+  html += '<h2>Pembukuan Tambahan (Air Mineral / Snack) — Terpisah</h2>';
+  html += '<div class="cards">';
+  html += '<div class="card"><div class="label">Omzet Tambahan</div><div class="value">' + rp(addon.revenue || 0) + '</div></div>';
+  html += '<div class="card"><div class="label">Modal</div><div class="value">' + rp(addon.cost || 0) + '</div></div>';
+  html += '<div class="card highlight"><div class="label">Laba Tambahan</div><div class="value">' + rp(addon.profit || 0) + '</div></div>';
+  html += '<div class="card"><div class="label">Item Terjual</div><div class="value">' + Number(addon.qty || 0) + ' pcs</div></div>';
+  html += '</div>';
+  const topAddons = addon.topAddons || [];
+  if (topAddons.length > 0) {
+    html += '<table><thead><tr><th>Item Tambahan Terlaris</th><th class="num">Qty</th><th class="num">Omzet</th></tr></thead><tbody>';
+    topAddons.forEach(function(t) {
+      html += '<tr><td>' + esc(t.name) + '</td><td class="num">' + Number(t.qty || 0) + '</td><td class="num">' + rp(t.amount) + '</td></tr>';
+    });
+    html += '</tbody></table>';
+  } else {
+    html += '<p style="color:#9ca3af;">Belum ada penjualan item tambahan pada periode ini.</p>';
+  }
+
   html += '<div class="footer">Dibuat otomatis oleh ' + esc(storeName) + ' POS System · ' + esc(POS_nowString_()) + '</div>';
   html += '</body></html>';
   return html;
+}
+
+/* =====================================================
+   ITEM TAMBAHAN (ADDON) — Pembukuan Terpisah
+   Air mineral / makanan ringan yang dibeli customer.
+   Tidak masuk bagi hasil terapis/investor.
+===================================================== */
+
+function POS_generateAddonId_() {
+  const sheet = POS_getOrCreateSheet_(POS_SHEET.ADDON_MENU, ADDON_MENU_HEADERS_);
+  const lastRow = sheet.getLastRow();
+  let maxNum = 0;
+  if (lastRow >= 2) {
+    const ids = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+    ids.forEach(r => { const m = /^A(\d+)$/.exec(POS_toString_(r[0])); if (m) { const n = parseInt(m[1], 10); if (n > maxNum) maxNum = n; } });
+  }
+  return 'A' + ('000' + (maxNum + 1)).slice(-3);
+}
+
+function POS_generateAddonSaleId_(extra) {
+  const now = POS_now_();
+  const datePart = Utilities.formatDate(now, POS_getTimezone_(), 'yyyyMMdd');
+  const timePart = Utilities.formatDate(now, POS_getTimezone_(), 'HHmmss');
+  const rand = Math.floor(Math.random() * 900 + 100);
+  return 'AS-' + datePart + '-' + timePart + '-' + rand + (extra !== undefined ? '-' + extra : '');
+}
+
+/** Bangun objek addon dari row sheet. */
+function POS_buildAddonObject_(row) {
+  const stock = POS_toNumber_(row.Stock);
+  return {
+    addonId: POS_toString_(row.Addon_ID),
+    name: POS_toString_(row.Name),
+    price: POS_toNumber_(row.Price),
+    cost: POS_toNumber_(row.Cost),
+    stock: stock,
+    stockStatus: POS_computeStockStatus_(stock),
+    active: POS_toBoolean_(row.Active),
+    createdAt: POS_toString_(row.Created_At),
+    updatedAt: POS_toString_(row.Updated_At)
+  };
+}
+
+/** Ambil daftar item tambahan. activeOnly opsional. */
+function getAddons(payload) {
+  try {
+    POS_getOrCreateSheet_(POS_SHEET.ADDON_MENU, ADDON_MENU_HEADERS_);
+    const activeOnly = !!(payload && payload.activeOnly === true);
+    const rows = POS_readObjects_(POS_SHEET.ADDON_MENU).filter(r => POS_toString_(r.Addon_ID));
+    const addons = rows.map(POS_buildAddonObject_)
+      .filter(a => activeOnly ? a.active : true)
+      .sort((a, b) => a.name.localeCompare(b.name));
+    return { success: true, message: 'Item tambahan dimuat.', data: { addons: addons } };
+  } catch (e) { return POS_errorResponse_(e); }
+}
+
+/** Tambah / update item tambahan. */
+function saveAddon(payload) {
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(10000);
+    const addonId = POS_toString_(payload && payload.addonId).trim();
+    const name = POS_toString_(payload && payload.name).trim();
+    const price = POS_toNumber_(payload && payload.price);
+    const cost = POS_toNumber_(payload && payload.cost);
+    const stock = POS_toNumber_(payload && payload.stock);
+    const active = (payload && payload.active !== undefined) ? POS_toBoolean_(payload.active) : true;
+
+    if (!name) throw new Error('Nama item tambahan wajib diisi.');
+    if (price < 0) throw new Error('Harga tidak boleh negatif.');
+
+    const sheet = POS_getOrCreateSheet_(POS_SHEET.ADDON_MENU, ADDON_MENU_HEADERS_);
+    const headers = POS_getHeaders_(sheet);
+    const headerMap = POS_getHeaderMap_(headers);
+    const lastRow = sheet.getLastRow();
+    const now = POS_nowString_();
+    const status = POS_computeStockStatus_(stock);
+
+    if (addonId) {
+      let foundRow = -1;
+      if (lastRow >= 2) {
+        const values = sheet.getRange(2, 1, lastRow - 1, headers.length).getValues();
+        for (let i = 0; i < values.length; i++) {
+          if (POS_toString_(values[i][headerMap.Addon_ID]) === addonId) { foundRow = i + 2; break; }
+        }
+      }
+      if (foundRow === -1) throw new Error('Item tambahan tidak ditemukan: ' + addonId);
+      sheet.getRange(foundRow, headerMap.Name + 1).setValue(name);
+      sheet.getRange(foundRow, headerMap.Price + 1).setValue(price);
+      sheet.getRange(foundRow, headerMap.Cost + 1).setValue(cost);
+      sheet.getRange(foundRow, headerMap.Stock + 1).setValue(stock);
+      sheet.getRange(foundRow, headerMap.Stock_Status + 1).setValue(status);
+      sheet.getRange(foundRow, headerMap.Active + 1).setValue(active ? 'TRUE' : 'FALSE');
+      sheet.getRange(foundRow, headerMap.Updated_At + 1).setValue(now);
+      SpreadsheetApp.flush();
+      return { success: true, message: 'Item tambahan diperbarui.', data: { addonId: addonId } };
+    }
+
+    const newId = POS_generateAddonId_();
+    POS_appendObjects_(POS_SHEET.ADDON_MENU, [{
+      Addon_ID: newId, Name: name, Price: price, Cost: cost, Stock: stock,
+      Stock_Status: status, Active: active ? 'TRUE' : 'FALSE', Created_At: now, Updated_At: now
+    }]);
+    SpreadsheetApp.flush();
+    return { success: true, message: 'Item tambahan ditambahkan.', data: { addonId: newId } };
+  } catch (e) { return POS_errorResponse_(e); }
+  finally { try { lock.releaseLock(); } catch (e) {} }
+}
+
+/** Update stock item tambahan (mode SET/ADD/REDUCE). */
+function updateAddonStock(payload) {
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(10000);
+    const addonId = POS_toString_(payload && payload.addonId).trim();
+    const mode = POS_toString_(payload && payload.mode).trim().toUpperCase();
+    const stockValue = POS_toNumber_(payload && payload.stockValue);
+    if (!addonId) throw new Error('Addon ID wajib diisi.');
+    if (!['SET', 'ADD', 'REDUCE'].includes(mode)) throw new Error('Mode stock tidak valid.');
+    if (stockValue < 0) throw new Error('Nilai stock tidak boleh negatif.');
+
+    const sheet = POS_getOrCreateSheet_(POS_SHEET.ADDON_MENU, ADDON_MENU_HEADERS_);
+    const headers = POS_getHeaders_(sheet);
+    const headerMap = POS_getHeaderMap_(headers);
+    const lastRow = sheet.getLastRow();
+    let foundRow = -1, current = 0;
+    if (lastRow >= 2) {
+      const values = sheet.getRange(2, 1, lastRow - 1, headers.length).getValues();
+      for (let i = 0; i < values.length; i++) {
+        if (POS_toString_(values[i][headerMap.Addon_ID]) === addonId) {
+          foundRow = i + 2; current = POS_toNumber_(values[i][headerMap.Stock]); break;
+        }
+      }
+    }
+    if (foundRow === -1) throw new Error('Item tambahan tidak ditemukan.');
+    let newStock = current;
+    if (mode === 'SET') newStock = stockValue;
+    if (mode === 'ADD') newStock = current + stockValue;
+    if (mode === 'REDUCE') newStock = Math.max(0, current - stockValue);
+    const status = POS_computeStockStatus_(newStock);
+    sheet.getRange(foundRow, headerMap.Stock + 1).setValue(newStock);
+    sheet.getRange(foundRow, headerMap.Stock_Status + 1).setValue(status);
+    sheet.getRange(foundRow, headerMap.Updated_At + 1).setValue(POS_nowString_());
+    SpreadsheetApp.flush();
+    return { success: true, message: 'Stock item tambahan diperbarui.', data: { addonId: addonId, newStock: newStock } };
+  } catch (e) { return POS_errorResponse_(e); }
+  finally { try { lock.releaseLock(); } catch (e) {} }
+}
+
+/** Soft-delete / aktifkan kembali item tambahan. */
+function setAddonActive(payload) {
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(10000);
+    const addonId = POS_toString_(payload && payload.addonId).trim();
+    const active = POS_toBoolean_(payload && payload.active);
+    if (!addonId) throw new Error('Addon ID wajib diisi.');
+    const sheet = POS_getOrCreateSheet_(POS_SHEET.ADDON_MENU, ADDON_MENU_HEADERS_);
+    const headers = POS_getHeaders_(sheet);
+    const headerMap = POS_getHeaderMap_(headers);
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) throw new Error('Belum ada item tambahan.');
+    const values = sheet.getRange(2, 1, lastRow - 1, headers.length).getValues();
+    for (let i = 0; i < values.length; i++) {
+      if (POS_toString_(values[i][headerMap.Addon_ID]) === addonId) {
+        sheet.getRange(i + 2, headerMap.Active + 1).setValue(active ? 'TRUE' : 'FALSE');
+        sheet.getRange(i + 2, headerMap.Updated_At + 1).setValue(POS_nowString_());
+        SpreadsheetApp.flush();
+        return { success: true, message: active ? 'Item tambahan diaktifkan.' : 'Item tambahan dinonaktifkan.' };
+      }
+    }
+    throw new Error('Item tambahan tidak ditemukan.');
+  } catch (e) { return POS_errorResponse_(e); }
+  finally { try { lock.releaseLock(); } catch (e) {} }
 }
 
 /* =====================================================

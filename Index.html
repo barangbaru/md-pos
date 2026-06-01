@@ -169,6 +169,18 @@
 
                 <div id="cartItems" class="cart-items"></div>
 
+                <!-- ITEM TAMBAHAN (pembukuan terpisah) -->
+                <div class="addon-section" style="border-top:1px dashed var(--border);padding-top:10px;margin-top:6px;">
+                  <label style="font-size:13px;font-weight:600;display:block;margin-bottom:6px;">🥤 Item Tambahan <small style="color:var(--text-secondary);font-weight:400;">(air mineral / snack)</small></label>
+                  <div style="display:flex;gap:6px;">
+                    <select id="addonPicker" class="select-input" style="flex:1;">
+                      <option value="">-- Pilih item --</option>
+                    </select>
+                    <button type="button" class="small-btn" onclick="addAddonFromPicker()">+ Add</button>
+                  </div>
+                  <div id="addonCartItems" class="addon-cart-items" style="margin-top:8px;"></div>
+                </div>
+
                 <div class="payment-box">
                   <label>Metode Pembayaran</label>
                   <div class="payment-methods">
@@ -211,6 +223,10 @@
                   <div class="summary-row">
                     <span id="summaryServiceLabel">Service</span>
                     <strong id="summaryService">Rp 0</strong>
+                  </div>
+                  <div class="summary-row" id="summaryAddonRow" style="display:none;">
+                    <span>🥤 Item Tambahan</span>
+                    <strong id="summaryAddon">Rp 0</strong>
                   </div>
                   <div class="summary-row total">
                     <span>Total</span>
@@ -266,6 +282,52 @@
                       </tr>
                     </thead>
                     <tbody id="stockTableBody"></tbody>
+                  </table>
+                </div>
+              </div>
+
+              <!-- ITEM TAMBAHAN (pembukuan terpisah) -->
+              <div class="section-card stock-toolbar" style="margin-top:16px;">
+                <div>
+                  <p class="eyebrow">Pembukuan Terpisah</p>
+                  <h2>🥤 Item Tambahan (Air Mineral / Snack)</h2>
+                  <p>Item retail yang dibeli customer. Omzet dibukukan terpisah, tidak masuk bagi hasil terapis/investor.</p>
+                </div>
+                <button class="small-btn" onclick="openAddonForm()">+ Tambah Item</button>
+              </div>
+
+              <!-- FORM ADDON (tersembunyi default) -->
+              <div class="section-card" id="addonFormCard" style="display:none;">
+                <div class="card-title-row">
+                  <div><p class="eyebrow">Form</p><h2 id="addonFormTitle">Tambah Item Tambahan</h2></div>
+                  <button class="small-btn" onclick="closeAddonForm()">Batal</button>
+                </div>
+                <div class="config-grid">
+                  <input type="hidden" id="addonFormId" />
+                  <div class="form-group"><label>Nama Item</label><input id="addonFormName" type="text" placeholder="Air Mineral 600ml" /></div>
+                  <div class="form-group"><label>Harga Jual</label><input id="addonFormPrice" type="text" inputmode="numeric" placeholder="Rp 5.000" oninput="handleRupiahInput(this)" /></div>
+                  <div class="form-group"><label>Modal/HPP</label><input id="addonFormCost" type="text" inputmode="numeric" placeholder="Rp 3.000" oninput="handleRupiahInput(this)" /></div>
+                  <div class="form-group"><label>Stock Awal</label><input id="addonFormStock" type="number" min="0" placeholder="0" /></div>
+                  <div class="form-group"><label>Status</label><select id="addonFormActive" class="select-input"><option value="true">Aktif</option><option value="false">Non-aktif</option></select></div>
+                </div>
+                <button class="checkout-btn" onclick="saveAddonForm()">Simpan Item Tambahan</button>
+              </div>
+
+              <div class="section-card table-card">
+                <div class="table-wrapper">
+                  <table class="data-table">
+                    <thead>
+                      <tr>
+                        <th>Nama</th>
+                        <th>Harga</th>
+                        <th>Modal</th>
+                        <th>Stock</th>
+                        <th>Status</th>
+                        <th>Update Stock</th>
+                        <th>Aksi</th>
+                      </tr>
+                    </thead>
+                    <tbody id="addonTableBody"><tr><td colspan="7">Memuat...</td></tr></tbody>
                   </table>
                 </div>
               </div>
@@ -633,6 +695,29 @@
                       </tr>
                     </thead>
                     <tbody id="monthlySalesTableBody"></tbody>
+                  </table>
+                </div>
+              </div>
+
+              <!-- PEMBUKUAN TAMBAHAN (TERPISAH) -->
+              <div class="section-card monthly-report-card" style="margin-top:16px;border:1px solid #bfdbfe;">
+                <div class="card-title-row">
+                  <div>
+                    <p class="eyebrow">Pembukuan Terpisah</p>
+                    <h2>🥤 Pembukuan Item Tambahan</h2>
+                    <p style="color:var(--text-secondary);font-size:13px;">Air mineral / snack — tidak masuk bagi hasil terapis/investor.</p>
+                  </div>
+                </div>
+                <div class="expense-summary-grid">
+                  <div class="expense-summary-card"><span>Omzet Tambahan</span><strong id="addonRevenue">Rp 0</strong></div>
+                  <div class="expense-summary-card"><span>Modal</span><strong id="addonCost">Rp 0</strong></div>
+                  <div class="expense-summary-card"><span>Laba Tambahan</span><strong id="addonProfit">Rp 0</strong></div>
+                  <div class="expense-summary-card"><span>Item Terjual</span><strong id="addonQty">0</strong></div>
+                </div>
+                <div class="table-wrapper">
+                  <table class="data-table">
+                    <thead><tr><th>Item Terlaris</th><th>Qty Terjual</th><th>Omzet</th></tr></thead>
+                    <tbody id="addonTopTableBody"><tr><td colspan="3">Belum ada penjualan item tambahan.</td></tr></tbody>
                   </table>
                 </div>
               </div>
@@ -1013,10 +1098,22 @@
 
           <div id="mobileCartItems" class="cart-items"></div>
 
+          <!-- ITEM TAMBAHAN (mobile) -->
+          <div class="addon-section" style="border-top:1px dashed var(--border);padding-top:10px;margin-top:6px;">
+            <label style="font-size:13px;font-weight:600;display:block;margin-bottom:6px;">🥤 Item Tambahan <small style="color:var(--text-secondary);font-weight:400;">(air mineral / snack)</small></label>
+            <div style="display:flex;gap:6px;">
+              <select id="mobileAddonPicker" class="select-input" style="flex:1;">
+                <option value="">-- Pilih item --</option>
+              </select>
+              <button type="button" class="small-btn" onclick="addAddonFromPicker(true)">+ Add</button>
+            </div>
+            <div id="mobileAddonCartItems" class="addon-cart-items" style="margin-top:8px;"></div>
+          </div>
+
           <div class="payment-box">
             <label>Metode Pembayaran</label>
             <div class="payment-methods">
-              
+
               <button class="payment-btn mobile-pay active" data-method="Cash" onclick="setPaymentMethod('Cash')">
                 💵 Cash
               </button>
@@ -1056,6 +1153,10 @@
             <div class="summary-row">
               <span id="mobileSummaryServiceLabel">Service</span>
               <strong id="mobileSummaryService">Rp 0</strong>
+            </div>
+            <div class="summary-row" id="mobileSummaryAddonRow" style="display:none;">
+              <span>🥤 Item Tambahan</span>
+              <strong id="mobileSummaryAddon">Rp 0</strong>
             </div>
             <div class="summary-row total">
               <span>Total</span>
