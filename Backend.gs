@@ -1950,11 +1950,10 @@ function saveAddon(payload) {
         }
       }
       if (foundRow === -1) throw new Error('Item tambahan tidak ditemukan: ' + addonId);
+      // Edit item TIDAK mengubah stok — stok hanya via updateAddonStock (berpassword).
       sheet.getRange(foundRow, headerMap.Name + 1).setValue(name);
       sheet.getRange(foundRow, headerMap.Price + 1).setValue(price);
       sheet.getRange(foundRow, headerMap.Cost + 1).setValue(cost);
-      sheet.getRange(foundRow, headerMap.Stock + 1).setValue(stock);
-      sheet.getRange(foundRow, headerMap.Stock_Status + 1).setValue(status);
       sheet.getRange(foundRow, headerMap.Active + 1).setValue(active ? 'TRUE' : 'FALSE');
       sheet.getRange(foundRow, headerMap.Updated_At + 1).setValue(now);
       SpreadsheetApp.flush();
@@ -1980,6 +1979,14 @@ function updateAddonStock(payload) {
     const addonId = POS_toString_(payload && payload.addonId).trim();
     const mode = POS_toString_(payload && payload.mode).trim().toUpperCase();
     const stockValue = POS_toNumber_(payload && payload.stockValue);
+
+    // Proteksi: ubah stok item tambahan butuh password dashboard
+    const passcode = POS_toString_(payload && payload.passcode).trim();
+    const correctPasscode = POS_getConfigValue_('DASHBOARD_PASSCODE', '');
+    if (!passcode || passcode !== correctPasscode) {
+      throw new Error('Password salah. Akses ditolak untuk mengubah stok item tambahan.');
+    }
+
     if (!addonId) throw new Error('Addon ID wajib diisi.');
     if (!['SET', 'ADD', 'REDUCE'].includes(mode)) throw new Error('Mode stock tidak valid.');
     if (stockValue < 0) throw new Error('Nilai stock tidak boleh negatif.');

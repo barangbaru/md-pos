@@ -307,7 +307,7 @@
                   <div class="form-group"><label>Nama Item</label><input id="addonFormName" type="text" placeholder="Air Mineral 600ml" /></div>
                   <div class="form-group"><label>Harga Jual</label><input id="addonFormPrice" type="text" inputmode="numeric" placeholder="Rp 5.000" oninput="handleRupiahInput(this)" /></div>
                   <div class="form-group"><label>Modal/HPP</label><input id="addonFormCost" type="text" inputmode="numeric" placeholder="Rp 3.000" oninput="handleRupiahInput(this)" /></div>
-                  <div class="form-group"><label>Stock Awal</label><input id="addonFormStock" type="number" min="0" placeholder="0" /></div>
+                  <div class="form-group"><label>Stock Awal</label><input id="addonFormStock" type="number" min="0" placeholder="0" /><small class="field-help" id="addonFormStockHelp">Stok awal saat item dibuat.</small></div>
                   <div class="form-group"><label>Status</label><select id="addonFormActive" class="select-input"><option value="true">Aktif</option><option value="false">Non-aktif</option></select></div>
                 </div>
                 <button class="checkout-btn" onclick="saveAddonForm()">Simpan Item Tambahan</button>
@@ -1204,6 +1204,23 @@
           <div class="modal-actions">
             <button class="secondary-btn" onclick="closeProtectedModal()">Batal</button>
             <button class="primary-btn" onclick="validateProtectedAccess()">Buka</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ADDON STOCK AUTH MODAL -->
+      <div id="addonStockAuthModal" class="modal-overlay hidden">
+        <div class="protected-modal" style="max-width:380px;">
+          <div class="lock-icon">🔒</div>
+          <h2>Password Stok Item Tambahan</h2>
+          <p>Masukkan password dashboard untuk menambah / mengurangi stok item tambahan.</p>
+          <div class="form-group" style="margin:16px 0;">
+            <input id="addonStockPasscodeInput" type="password" placeholder="Password dashboard" onkeydown="handleAddonStockAuthEnter(event)" />
+          </div>
+          <p id="addonStockAuthError" class="error-text"></p>
+          <div class="modal-actions">
+            <button class="secondary-btn" onclick="closeAddonStockAuth()">Batal</button>
+            <button class="primary-btn" onclick="submitAddonStockAuth()">Buka</button>
           </div>
         </div>
       </div>

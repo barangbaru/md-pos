@@ -1367,6 +1367,10 @@ function openAddonForm() {
   setInputValue('addonFormCost', '');
   setInputValue('addonFormStock', '0');
   setInputValue('addonFormActive', 'true');
+  // Stok bisa diisi saat buat item baru
+  const stockEl = document.getElementById('addonFormStock');
+  if (stockEl) stockEl.disabled = false;
+  setText('addonFormStockHelp', 'Stok awal saat item dibuat.');
 }
 
 function closeAddonForm() {
@@ -1384,6 +1388,10 @@ function editAddon(addonId) {
   setInputValue('addonFormCost', formatRupiah(a.cost));
   setInputValue('addonFormStock', Number(a.stock || 0));
   setInputValue('addonFormActive', a.active ? 'true' : 'false');
+  // Stok tidak bisa diubah lewat form edit — hanya via tombol stok (berpassword)
+  const stockEl = document.getElementById('addonFormStock');
+  if (stockEl) stockEl.disabled = true;
+  setText('addonFormStockHelp', '🔒 Stok hanya bisa diubah lewat tombol +/−/Set (perlu password).');
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
@@ -1416,17 +1424,67 @@ function updateAddonStockUI(addonId, mode) {
   const val = Number(input && input.value ? input.value : 0);
   if (val < 0 || !Number.isFinite(val)) { showToast('Input stock tidak valid.', 'error'); return; }
   if (mode !== 'SET' && val <= 0) { showToast('Qty harus > 0.', 'error'); return; }
-  setLoading(true, 'Update stock...');
+  // Butuh password dashboard sebelum ubah stok
+  withAddonStockAuth(function(pass) {
+    setLoading(true, 'Update stock...');
+    google.script.run
+      .withSuccessHandler(function(res) {
+        setLoading(false);
+        if (!res.success) {
+          // Jika password ditolak server, reset agar diminta ulang
+          if (/password|passcode/i.test(res.message || '')) sessionStorage.removeItem('pos_addon_stock_pass');
+          onResError_('updateAddonStockUI', res); return;
+        }
+        showToast('Stock item tambahan diperbarui.');
+        if (input) input.value = '';
+        loadAddonManagement();
+      })
+      .withFailureHandler(onFail_('updateAddonStockUI'))
+      .updateAddonStock({ addonId: addonId, mode: mode, stockValue: val, passcode: pass });
+  });
+}
+
+/* ----- Proteksi password stok item tambahan (pakai password dashboard) ----- */
+
+var _pendingAddonStock = null;
+
+function withAddonStockAuth(cb) {
+  const pass = sessionStorage.getItem('pos_addon_stock_pass');
+  if (pass) { cb(pass); return; }
+  _pendingAddonStock = cb;
+  document.getElementById('addonStockAuthError').textContent = '';
+  document.getElementById('addonStockPasscodeInput').value = '';
+  document.getElementById('addonStockAuthModal').classList.remove('hidden');
+  setTimeout(function() { const el = document.getElementById('addonStockPasscodeInput'); if (el) el.focus(); }, 100);
+}
+
+function closeAddonStockAuth() {
+  document.getElementById('addonStockAuthModal').classList.add('hidden');
+  _pendingAddonStock = null;
+}
+
+function handleAddonStockAuthEnter(e) {
+  if (e.key === 'Enter') submitAddonStockAuth();
+}
+
+function submitAddonStockAuth() {
+  const pass = document.getElementById('addonStockPasscodeInput').value.trim();
+  const err = document.getElementById('addonStockAuthError');
+  err.textContent = '';
+  if (!pass) { err.textContent = 'Password wajib diisi.'; return; }
+  setLoading(true, 'Validasi password...');
   google.script.run
     .withSuccessHandler(function(res) {
       setLoading(false);
-      if (!res.success) { onResError_('updateAddonStockUI', res); return; }
-      showToast('Stock item tambahan diperbarui.');
-      if (input) input.value = '';
-      loadAddonManagement();
+      if (!res.success) { err.textContent = res.message || 'Password salah.'; return; }
+      // Simpan untuk sesi ini agar tidak diminta berulang
+      sessionStorage.setItem('pos_addon_stock_pass', pass);
+      document.getElementById('addonStockAuthModal').classList.add('hidden');
+      const cb = _pendingAddonStock; _pendingAddonStock = null;
+      if (cb) cb(pass);
     })
-    .withFailureHandler(onFail_('updateAddonStockUI'))
-    .updateAddonStock({ addonId: addonId, mode: mode, stockValue: val });
+    .withFailureHandler(function(e) { setLoading(false); err.textContent = getErrorMessage(e); })
+    .validateProtectedTabPasscode({ area: 'dashboard', passcode: pass });
 }
 
 function toggleAddonActive(addonId, active) {
