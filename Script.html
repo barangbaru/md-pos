@@ -1652,9 +1652,59 @@ function loadPengeluaranData() {
       setupDefaultExpenseDateFilter();
       populateExpenseFilterOptions();
       renderPengeluaranTable();
+      loadCashSummary();
     })
     .withFailureHandler(onFail_('loadPengeluaranData'))
     .getExpenses();
+}
+
+/* ----- Setor Dana & Info Cash Kasir ----- */
+
+function getExpenseDateRange() {
+  return {
+    startDate: getInputValue('expenseFilterStartDate'),
+    endDate: getInputValue('expenseFilterEndDate')
+  };
+}
+
+function loadCashSummary() {
+  google.script.run
+    .withSuccessHandler(function(res) {
+      if (!res.success || !res.data) return;
+      const d = res.data;
+      setText('cashInDrawer', formatRupiah(d.cashInDrawer || 0));
+      setText('cashSales', formatRupiah(d.cashSales || 0));
+      setText('cashExpenses', formatRupiah(d.cashExpenses || 0));
+      setText('cashDeposited', formatRupiah(d.totalDeposit || 0));
+      const range = d.range || {};
+      const label = range.startDate === range.endDate ? range.startDate : (range.startDate + ' s/d ' + range.endDate);
+      setText('cashSummaryNote', 'Info cash untuk: ' + (label || '-') + ' · ' + (d.depositCount || 0) + ' setoran. Cash = penjualan cash − pengeluaran cash − setoran.');
+    })
+    .withFailureHandler(onFail_('loadCashSummary'))
+    .getCashSummary(getExpenseDateRange());
+}
+
+function onExpenseFilterDateChange() {
+  renderPengeluaranTable();
+  loadCashSummary();
+}
+
+function saveDeposit() {
+  const amount = parseRupiahInput(getInputValue('depositAmountInput'));
+  const description = getInputValue('depositDescriptionInput');
+  if (amount <= 0) { showToast('Nominal setoran harus lebih dari 0.', 'error'); return; }
+  setLoading(true, 'Menyimpan setoran...');
+  google.script.run
+    .withSuccessHandler(function(res) {
+      setLoading(false);
+      if (!res.success) { onResError_('saveDeposit', res); return; }
+      showToast('Setoran dana berhasil disimpan.');
+      setInputValue('depositAmountInput', '');
+      setInputValue('depositDescriptionInput', '');
+      loadCashSummary();
+    })
+    .withFailureHandler(onFail_('saveDeposit'))
+    .addCashDeposit({ cashierName: state.cashierName, amount: amount, description: description });
 }
 
 function setupDefaultExpenseDateFilter() {

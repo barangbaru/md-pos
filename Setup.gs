@@ -516,7 +516,9 @@ function upgradePOSDatabaseSchema() {
   }
   if (!ss.getSheetByName('ADDON_SALES')) {
     const as = getOrCreateSheet_(ss, 'ADDON_SALES');
-    writeTable_(as, ['Addon_Sale_ID', 'Transaction_ID', 'Date', 'Time', 'Addon_ID', 'Name', 'Qty', 'Price', 'Cost', 'Amount', 'Gross_Profit', 'Cashier_Name', 'Created_At'], []);
+    writeTable_(as, ['Addon_Sale_ID', 'Transaction_ID', 'Date', 'Time', 'Addon_ID', 'Name', 'Qty', 'Price', 'Cost', 'Amount', 'Gross_Profit', 'Payment_Method', 'Cashier_Name', 'Created_At'], []);
+  } else {
+    addMissingColumns_(ss, 'ADDON_SALES', ['Payment_Method']);
   }
 
   // ===== Tambah config baru kalau belum ada =====

@@ -619,6 +619,7 @@ function checkoutOrder(payload) {
         Cost: a.cost,
         Amount: a.amount,
         Gross_Profit: a.grossProfit,
+        Payment_Method: paymentMethod,
         Cashier_Name: cashierName,
         Created_At: now
       }));
@@ -738,6 +739,9 @@ function POS_normalizeExpenseRow_(row) {
   if (savedType === 'Therapist') {
     // Hormati flag terapis yang sudah tersimpan
     type = 'Therapist';
+  } else if (savedType === 'Deposit') {
+    // Setor dana — bukan pengeluaran, jangan masuk hitungan operasional/kasbon
+    type = 'Deposit';
   } else {
     type = POS_isPersonalExpenseCategory_(category) ? 'Personal' : 'Sharing';
   }
@@ -801,9 +805,85 @@ function getExpenses() {
     const expenses = POS_readObjects_(POS_SHEET.EXPENSES)
       .filter(row => POS_toString_(row.Expense_ID))
       .map(POS_normalizeExpenseRow_)
+      .filter(row => POS_toString_(row.Expense_Type) !== 'Deposit') // setor dana ditampilkan terpisah
       .sort((a, b) => (POS_toString_(b.Date) + ' ' + POS_toString_(b.Time)).localeCompare(POS_toString_(a.Date) + ' ' + POS_toString_(a.Time)));
     return { success: true, message: 'Data pengeluaran berhasil dimuat.', data: { expenses: expenses } };
   } catch (error) { return POS_errorResponse_(error); }
+}
+
+/** Catat setor dana (cash keluar dari laci kasir). Disimpan di EXPENSES bertipe 'Deposit'. */
+function addCashDeposit(payload) {
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(10000);
+    const cashierName = POS_toString_(payload && payload.cashierName).trim();
+    const amount = POS_toNumber_(payload && payload.amount);
+    const description = POS_toString_(payload && payload.description).trim() || 'Setor dana';
+    if (!cashierName) throw new Error('Nama kasir tidak ditemukan. Silakan login ulang.');
+    if (amount <= 0) throw new Error('Nominal setoran harus lebih dari 0.');
+    const row = {
+      Expense_ID: POS_generateExpenseId_(), Date: POS_todayString_(), Time: POS_timeString_(),
+      Cashier_Name: cashierName, Expense_Type: 'Deposit', Personal_Cashier: '',
+      Category: 'Setor Dana', Description: description, Amount: amount, Created_At: POS_nowString_()
+    };
+    POS_appendObjects_(POS_SHEET.EXPENSES, [row]);
+    SpreadsheetApp.flush();
+    POS_invalidateDashboardCache_();
+    return { success: true, message: 'Setoran dana berhasil disimpan.', data: row };
+  } catch (e) { return POS_errorResponse_(e); }
+  finally { try { lock.releaseLock(); } catch (e) {} }
+}
+
+/**
+ * Ringkasan cash kasir untuk rentang tanggal.
+ * cashInDrawer = penjualan cash (layanan + tambahan) − pengeluaran cash − total setoran.
+ */
+function getCashSummary(payload) {
+  try {
+    const filter = payload || {};
+    const today = POS_todayString_();
+    const range = POS_resolveDashboardRange_(filter, today);
+
+    // Penjualan cash (layanan)
+    const sales = POS_readObjects_(POS_SHEET.SALES)
+      .filter(r => POS_toString_(r.Status) === 'PAID')
+      .filter(r => POS_isDateInRange_(r.Date, range.startDate, range.endDate));
+    let cashSales = sales
+      .filter(r => POS_toString_(r.Payment_Method) === 'Cash')
+      .reduce((s, r) => s + POS_toNumber_(r.Rounded_Total || r.Grand_Total), 0);
+
+    // Penjualan cash (item tambahan)
+    try {
+      const addonSales = POS_readObjects_(POS_SHEET.ADDON_SALES)
+        .filter(r => POS_toString_(r.Addon_Sale_ID))
+        .filter(r => POS_isDateInRange_(r.Date, range.startDate, range.endDate))
+        .filter(r => POS_toString_(r.Payment_Method) === 'Cash');
+      cashSales += addonSales.reduce((s, r) => s + POS_toNumber_(r.Amount), 0);
+    } catch (e) { /* sheet addon belum ada */ }
+
+    // Pengeluaran cash & setoran
+    const expensesAll = POS_readObjects_(POS_SHEET.EXPENSES).map(POS_normalizeExpenseRow_)
+      .filter(r => POS_toString_(r.Expense_ID))
+      .filter(r => POS_isDateInRange_(r.Date, range.startDate, range.endDate));
+    const cashExpenses = expensesAll
+      .filter(r => POS_toString_(r.Expense_Type) !== 'Deposit')
+      .reduce((s, r) => s + POS_toNumber_(r.Amount), 0);
+    const deposits = expensesAll.filter(r => POS_toString_(r.Expense_Type) === 'Deposit');
+    const totalDeposit = deposits.reduce((s, r) => s + POS_toNumber_(r.Amount), 0);
+
+    return {
+      success: true,
+      message: 'Ringkasan cash dimuat.',
+      data: {
+        range: range,
+        cashSales: cashSales,
+        cashExpenses: cashExpenses,
+        totalDeposit: totalDeposit,
+        depositCount: deposits.length,
+        cashInDrawer: cashSales - cashExpenses - totalDeposit
+      }
+    };
+  } catch (e) { return POS_errorResponse_(e); }
 }
 
 /* =====================================================
@@ -834,7 +914,8 @@ function getDashboardData(filter) {
 
     const sales = POS_readObjects_(POS_SHEET.SALES);
     const saleItems = POS_readObjects_(POS_SHEET.SALE_ITEMS);
-    const expenses = POS_readObjects_(POS_SHEET.EXPENSES).map(POS_normalizeExpenseRow_);
+    const expenses = POS_readObjects_(POS_SHEET.EXPENSES).map(POS_normalizeExpenseRow_)
+      .filter(r => POS_toString_(r.Expense_Type) !== 'Deposit'); // setor dana bukan pengeluaran
     const allTherapistPoints = POS_readObjects_(POS_SHEET.THERAPIST_POINTS).filter(r => POS_toString_(r.Point_ID));
     const menuCostMap = POS_getMenuCostMap_();
     const today = POS_todayString_();
