@@ -306,11 +306,10 @@
     }
 
     if (tabName === 'terapis') {
-      if (state.therapistUnlocked || sessionStorage.getItem('pos_therapist_unlocked') === 'true') {
-        state.therapistUnlocked = true;
-        showTherapistContent();
-        loadTherapistData();
-      }
+      // Master Terapis dibuka tanpa password
+      state.therapistUnlocked = true;
+      showTherapistContent();
+      loadTherapistData();
     }
 
     if (tabName === 'dashboard') {
