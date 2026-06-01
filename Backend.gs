@@ -1466,6 +1466,220 @@ function POS_buildReportEmailHtml_(storeName, rangeLabel, days, d) {
 }
 
 /* =====================================================
+   DAILY AUTO REPORT (Trigger 22:00 WIB)
+===================================================== */
+
+/** Dipanggil time-based trigger setiap hari jam 22:00. Kirim laporan hari berjalan. */
+function POS_dailyReportTrigger_() {
+  try {
+    const today = POS_todayString_();
+    const res = sendReport({ filter: { startDate: today, endDate: today }, channels: ['email', 'telegram'] });
+    if (!res.success) {
+      try { POS_logError_('POS_dailyReportTrigger_', res.message || 'Laporan harian sebagian gagal.'); } catch(le) {}
+    }
+  } catch (e) {
+    try { POS_logError_('POS_dailyReportTrigger_', e.message); } catch(le) {}
+    Logger.log('❌ Laporan harian gagal: ' + e.message);
+  }
+}
+
+/** Setup trigger laporan harian otomatis jam 22:00 WIB. Idempotent. */
+function setupDailyReportTrigger() {
+  try {
+    ScriptApp.getProjectTriggers().forEach(function(t) {
+      if (t.getHandlerFunction() === 'POS_dailyReportTrigger_') ScriptApp.deleteTrigger(t);
+    });
+    // Timezone project = Asia/Jakarta, jadi atHour(22) = 22:00 WIB
+    ScriptApp.newTrigger('POS_dailyReportTrigger_').timeBased().everyDays(1).atHour(22).create();
+    return { success: true, message: 'Laporan harian otomatis aktif (setiap hari jam 22:00 WIB).' };
+  } catch (e) { return POS_errorResponse_(e); }
+}
+
+/** Nonaktifkan trigger laporan harian. */
+function disableDailyReportTrigger() {
+  try {
+    let removed = 0;
+    ScriptApp.getProjectTriggers().forEach(function(t) {
+      if (t.getHandlerFunction() === 'POS_dailyReportTrigger_') { ScriptApp.deleteTrigger(t); removed++; }
+    });
+    return { success: true, message: removed > 0 ? 'Laporan harian otomatis dinonaktifkan.' : 'Tidak ada trigger aktif.' };
+  } catch (e) { return POS_errorResponse_(e); }
+}
+
+/** Status trigger laporan harian (untuk UI). */
+function getDailyReportTriggerStatus() {
+  try {
+    const active = ScriptApp.getProjectTriggers().some(function(t) {
+      return t.getHandlerFunction() === 'POS_dailyReportTrigger_';
+    });
+    return { success: true, data: { active: active } };
+  } catch (e) { return { success: true, data: { active: false } }; }
+}
+
+/* =====================================================
+   EXPORT DASHBOARD KE PDF
+===================================================== */
+
+/**
+ * Generate PDF dashboard sesuai filter.
+ * Isi: ringkasan keuangan + bagi hasil, rekap transaksi harian,
+ * detail seluruh pengeluaran, dan ringkasan pembayaran.
+ * Return base64 untuk di-download di browser.
+ */
+function exportDashboardPdf(filter) {
+  try {
+    const dashResult = getDashboardData(filter);
+    if (!dashResult.success) throw new Error('Gagal ambil data: ' + dashResult.message);
+    const data = dashResult.data;
+    const range = data.range || {};
+
+    // Detail seluruh pengeluaran dalam range (bukan grouped)
+    const expenseDetail = POS_readObjects_(POS_SHEET.EXPENSES)
+      .map(POS_normalizeExpenseRow_)
+      .filter(r => POS_toString_(r.Expense_ID))
+      .filter(r => POS_isDateInRange_(r.Date, range.startDate, range.endDate))
+      .sort((a, b) => (POS_toString_(a.Date) + ' ' + POS_toString_(a.Time)).localeCompare(POS_toString_(b.Date) + ' ' + POS_toString_(b.Time)));
+
+    const config = POS_getConfigMap_();
+    const storeName = POS_toString_(config.STORE_NAME || 'POS System');
+
+    const html = POS_buildDashboardPdfHtml_(storeName, data, expenseDetail);
+
+    const rangeTag = range.startDate === range.endDate
+      ? range.startDate
+      : range.startDate + '_sd_' + range.endDate;
+    const filename = 'Laporan_' + storeName.replace(/[^\w]+/g, '_') + '_' + rangeTag + '.pdf';
+
+    const blob = Utilities.newBlob(html, 'text/html', 'report.html').getAs('application/pdf');
+    const base64 = Utilities.base64Encode(blob.getBytes());
+
+    return { success: true, message: 'PDF berhasil dibuat.', data: { base64: base64, filename: filename } };
+  } catch (e) { return POS_errorResponse_(e); }
+}
+
+/** Build HTML untuk PDF dashboard (print-friendly A4). */
+function POS_buildDashboardPdfHtml_(storeName, data, expenseDetail) {
+  const cards = data.cards || {};
+  const range = data.range || {};
+  const summary = data.monthlySummary || {};
+  const dailySales = data.monthlySales || [];
+  const payment = data.paymentSummary || {};
+
+  const omzet = Number(cards.revenueToday || 0);
+  const operasional = Number(cards.sharingExpensesToday || 0);
+  const kasbon = Number(cards.personalExpensesToday || 0);
+  const labaTerapis = omzet / 2;
+  const sisaInvestor = (omzet / 2) - operasional;
+  const labaInvestor1 = sisaInvestor * 0.60;
+  const labaInvestor2 = sisaInvestor * 0.40;
+  const transaksi = Number(cards.transactionsToday || 0);
+
+  const days = range.days || 1;
+  const rangeLabel = range.startDate === range.endDate
+    ? range.startDate
+    : range.startDate + ' s/d ' + range.endDate;
+
+  function esc(s) { return POS_toString_(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function rp(n) { return POS_formatRupiah_(n); }
+
+  let html = ''
+    + '<!DOCTYPE html><html><head><meta charset="utf-8"><style>'
+    + '* { font-family: Arial, sans-serif; box-sizing: border-box; }'
+    + 'body { margin: 0; padding: 24px; color: #1f2937; font-size: 12px; }'
+    + 'h1 { font-size: 20px; margin: 0 0 4px; color: #1d4ed8; }'
+    + 'h2 { font-size: 14px; margin: 20px 0 8px; padding-bottom: 4px; border-bottom: 2px solid #e5e7eb; color: #374151; }'
+    + '.sub { color: #6b7280; font-size: 12px; margin-bottom: 4px; }'
+    + 'table { width: 100%; border-collapse: collapse; margin-bottom: 8px; }'
+    + 'th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid #e5e7eb; }'
+    + 'th { background: #f3f4f6; font-size: 11px; text-transform: uppercase; color: #6b7280; }'
+    + 'td.num, th.num { text-align: right; }'
+    + '.cards { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }'
+    + '.card { flex: 1 1 30%; border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px 12px; min-width: 150px; }'
+    + '.card .label { color: #6b7280; font-size: 11px; }'
+    + '.card .value { font-size: 16px; font-weight: 700; margin-top: 2px; }'
+    + '.card.highlight { background: #eff6ff; border-color: #bfdbfe; }'
+    + '.totrow td { font-weight: 700; background: #f9fafb; }'
+    + '.footer { margin-top: 24px; color: #9ca3af; font-size: 10px; text-align: center; border-top: 1px solid #e5e7eb; padding-top: 8px; }'
+    + '</style></head><body>';
+
+  // Header
+  html += '<h1>📊 Laporan ' + esc(storeName) + '</h1>';
+  html += '<div class="sub">Periode: <strong>' + esc(rangeLabel) + '</strong>' + (days > 1 ? ' (' + days + ' hari)' : '') + '</div>';
+  html += '<div class="sub">Dicetak: ' + esc(POS_nowString_()) + '</div>';
+
+  // Ringkasan keuangan & bagi hasil (cards)
+  html += '<h2>Ringkasan</h2><div class="cards">';
+  html += '<div class="card highlight"><div class="label">Total Omzet</div><div class="value">' + rp(omzet) + '</div></div>';
+  html += '<div class="card"><div class="label">Total Transaksi</div><div class="value">' + transaksi + ' trx</div></div>';
+  html += '<div class="card"><div class="label">Pengeluaran Operasional</div><div class="value">' + rp(operasional) + '</div></div>';
+  html += '<div class="card"><div class="label">Total Kasbon</div><div class="value">' + rp(kasbon) + '</div></div>';
+  html += '<div class="card highlight"><div class="label">Laba Terapis (50%)</div><div class="value">' + rp(labaTerapis) + '</div></div>';
+  html += '<div class="card"><div class="label">Laba Investor 1 (60%)</div><div class="value">' + rp(labaInvestor1) + '</div></div>';
+  html += '<div class="card"><div class="label">Laba Investor 2 (40%)</div><div class="value">' + rp(labaInvestor2) + '</div></div>';
+  html += '</div>';
+
+  // Rekap transaksi harian
+  html += '<h2>Rekap Transaksi Harian</h2>';
+  html += '<table><thead><tr><th>Tanggal</th><th class="num">Transaksi</th><th class="num">Omzet</th><th class="num">Gross Profit</th><th class="num">Pengeluaran</th><th class="num">Net Profit</th></tr></thead><tbody>';
+  if (dailySales.length === 0) {
+    html += '<tr><td colspan="6">Tidak ada transaksi pada periode ini.</td></tr>';
+  } else {
+    dailySales.forEach(function(r) {
+      html += '<tr><td>' + esc(r.date) + '</td>'
+        + '<td class="num">' + Number(r.transactions || 0) + '</td>'
+        + '<td class="num">' + rp(r.revenue) + '</td>'
+        + '<td class="num">' + rp(r.grossProfit) + '</td>'
+        + '<td class="num">' + rp(r.expenses) + '</td>'
+        + '<td class="num">' + rp(r.netProfit) + '</td></tr>';
+    });
+    html += '<tr class="totrow"><td>TOTAL</td>'
+      + '<td class="num">' + Number(summary.transactions || 0) + '</td>'
+      + '<td class="num">' + rp(summary.revenue) + '</td>'
+      + '<td class="num">' + rp(summary.grossProfit) + '</td>'
+      + '<td class="num">' + rp(summary.expenses) + '</td>'
+      + '<td class="num">' + rp(summary.netProfit) + '</td></tr>';
+  }
+  html += '</tbody></table>';
+
+  // Detail seluruh pengeluaran
+  html += '<h2>Detail Pengeluaran</h2>';
+  html += '<table><thead><tr><th>Tanggal</th><th>Jenis</th><th>Penerima</th><th>Kategori</th><th>Keterangan</th><th class="num">Nilai</th></tr></thead><tbody>';
+  if (expenseDetail.length === 0) {
+    html += '<tr><td colspan="6">Tidak ada pengeluaran pada periode ini.</td></tr>';
+  } else {
+    let totalExp = 0;
+    expenseDetail.forEach(function(e) {
+      const type = POS_toString_(e.Expense_Type);
+      let typeLabel = 'Operasional';
+      if (type === 'Therapist') typeLabel = 'Kasbon Terapis';
+      else if (type === 'Personal') typeLabel = 'Pribadi';
+      const amount = POS_toNumber_(e.Amount);
+      totalExp += amount;
+      html += '<tr><td>' + esc(e.Date) + '<br><small style="color:#9ca3af;">' + esc(e.Time) + '</small></td>'
+        + '<td>' + esc(typeLabel) + '</td>'
+        + '<td>' + esc(e.Personal_Cashier || '-') + '</td>'
+        + '<td>' + esc(e.Category || '-') + '</td>'
+        + '<td>' + esc(e.Description || '-') + '</td>'
+        + '<td class="num">' + rp(amount) + '</td></tr>';
+    });
+    html += '<tr class="totrow"><td colspan="5">TOTAL PENGELUARAN</td><td class="num">' + rp(totalExp) + '</td></tr>';
+  }
+  html += '</tbody></table>';
+
+  // Ringkasan pembayaran
+  html += '<h2>Ringkasan Metode Pembayaran</h2>';
+  html += '<table><thead><tr><th>Metode</th><th class="num">Total</th></tr></thead><tbody>';
+  ['Cash', 'QRIS', 'Transfer'].forEach(function(m) {
+    html += '<tr><td>' + m + '</td><td class="num">' + rp(payment[m] || 0) + '</td></tr>';
+  });
+  html += '</tbody></table>';
+
+  html += '<div class="footer">Dibuat otomatis oleh ' + esc(storeName) + ' POS System · ' + esc(POS_nowString_()) + '</div>';
+  html += '</body></html>';
+  return html;
+}
+
+/* =====================================================
    ERROR LOG
 ===================================================== */
 

@@ -547,6 +547,7 @@
                     <button type="button" class="primary-btn" onclick="applyDashboardFilter()">Terapkan</button>
                     <button type="button" class="small-btn" onclick="resetDashboardFilter()">Reset</button>
                     <button type="button" class="small-btn" onclick="openSendReportModal()" title="Kirim laporan ke Email / Telegram">📤 Kirim Laporan</button>
+                    <button type="button" class="small-btn" onclick="exportDashboardToPdf()" title="Export laporan dashboard ke PDF">📄 Export PDF</button>
                   </div>
                 </div>
               </div>
@@ -892,6 +893,27 @@
                   <button class="primary-btn" onclick="toggleMaintenanceMode(true)">🔴 Aktifkan Maintenance</button>
                   <button class="small-btn" onclick="toggleMaintenanceMode(false)">✅ Nonaktifkan</button>
                   <button class="small-btn" onclick="doSetupLogTrigger()">⏰ Setup Auto-Cleanup Trigger</button>
+                </div>
+              </div>
+
+              <!-- LAPORAN HARIAN OTOMATIS -->
+              <div class="section-card config-card">
+                <div class="card-title-row">
+                  <div>
+                    <p class="eyebrow">Automation</p>
+                    <h2>📅 Laporan Harian Otomatis</h2>
+                  </div>
+                </div>
+                <p style="font-size:13px;color:var(--text-secondary);margin-bottom:10px;">
+                  Kirim laporan hari berjalan otomatis ke Email &amp; Telegram setiap hari pukul <strong>22:00 WIB</strong>.
+                  Pastikan Email/Telegram sudah dikonfigurasi di atas.
+                </p>
+                <div class="form-group" style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+                  <span id="dailyReportStatusText" style="font-size:14px;color:var(--text-secondary);">Status: memuat...</span>
+                </div>
+                <div style="display:flex;gap:10px;flex-wrap:wrap;">
+                  <button class="primary-btn" onclick="toggleDailyReport(true)">🟢 Aktifkan (22:00 WIB)</button>
+                  <button class="small-btn" onclick="toggleDailyReport(false)">⏹️ Nonaktifkan</button>
                 </div>
               </div>
 

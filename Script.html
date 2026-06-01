@@ -2360,6 +2360,7 @@ function fillConfigForm() {
   // Maintenance & Log
   setInputValue('configLogRetentionDays', state.config.logRetentionDays || 60);
   loadMaintenanceStatus();
+  loadDailyReportStatus();
 
   setInputValue('configCashierPasscode', '');
   setInputValue('configDashboardPasscode', '');
@@ -2473,6 +2474,35 @@ function doSetupLogTrigger() {
     .setupLogCleanupTrigger();
 }
 
+/* ----- Laporan Harian Otomatis ----- */
+
+function loadDailyReportStatus() {
+  google.script.run
+    .withSuccessHandler(function(res) {
+      const el = document.getElementById('dailyReportStatusText');
+      if (!el || !res || !res.data) return;
+      const active = res.data.active;
+      el.innerHTML = 'Status: <strong style="color:' + (active ? '#22c55e' : '#9ca3af') + '">'
+        + (active ? '🟢 AKTIF (setiap hari 22:00 WIB)' : '⏹️ Nonaktif') + '</strong>';
+    })
+    .withFailureHandler(function() {})
+    .getDailyReportTriggerStatus();
+}
+
+function toggleDailyReport(enable) {
+  if (enable && !confirm('Aktifkan laporan harian otomatis?\nLaporan hari berjalan akan dikirim ke Email & Telegram setiap hari jam 22:00 WIB.')) return;
+  setLoading(true, enable ? 'Mengaktifkan...' : 'Menonaktifkan...');
+  const runner = google.script.run
+    .withSuccessHandler(function(res) {
+      setLoading(false);
+      showToast(res.success ? res.message : (res.message || 'Gagal.'), res.success ? 'success' : 'error');
+      loadDailyReportStatus();
+    })
+    .withFailureHandler(onFail_('toggleDailyReport'));
+  if (enable) runner.setupDailyReportTrigger();
+  else runner.disableDailyReportTrigger();
+}
+
 function loadErrorLogs() {
   const tbody   = document.getElementById('errorLogTableBody');
   const summary = document.getElementById('errorLogSummary');
@@ -2577,6 +2607,45 @@ function submitSendReport() {
     })
     .withFailureHandler(onFail_('submitSendReport', 'Gagal kirim laporan. Cek error log.'))
     .sendReport({ filter: filter, channels: channels });
+}
+
+/* =====================================================
+   EXPORT DASHBOARD KE PDF
+===================================================== */
+
+function exportDashboardToPdf() {
+  const filter = getDashboardFilterValue();
+  if (!filter || !filter.startDate || !filter.endDate) {
+    showToast('Terapkan filter tanggal terlebih dahulu.', 'error');
+    return;
+  }
+  setLoading(true, 'Membuat PDF...');
+  google.script.run
+    .withSuccessHandler(function(res) {
+      setLoading(false);
+      if (!res.success) { onResError_('exportDashboardToPdf', res); return; }
+      try {
+        // Konversi base64 → Blob → unduh (lebih andal daripada data: URI panjang)
+        const byteChars = atob(res.data.base64);
+        const byteNums = new Array(byteChars.length);
+        for (let i = 0; i < byteChars.length; i++) byteNums[i] = byteChars.charCodeAt(i);
+        const blob = new Blob([new Uint8Array(byteNums)], { type: 'application/pdf' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = res.data.filename || 'laporan-dashboard.pdf';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+        showToast('PDF berhasil diunduh.');
+      } catch (e) {
+        showToast('Gagal memproses PDF.', 'error');
+        clientLogError_('exportDashboardToPdf[download]', e);
+      }
+    })
+    .withFailureHandler(onFail_('exportDashboardToPdf', 'Gagal membuat PDF. Cek error log.'))
+    .exportDashboardPdf(filter);
 }
 
 /* =====================================================
